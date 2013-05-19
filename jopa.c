@@ -52,7 +52,7 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
         LR[i<<1]=L[i];
         LR[(i<<1)|1]=R[i];
     }
-    pa_simple_write(hPulse, LR, sizeof LR, NULL);
+    pa_simple_write(hPulse, LR, nframes*((sizeof *LR)<<1), NULL);
     free(LR);
     return 0;
 }
