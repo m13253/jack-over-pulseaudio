@@ -7,6 +7,6 @@ Usage
 -----
 ```
 $ make
-$ jackd -ddummy
-$ ./jopa
+$ jackd -d dummy &
+$ ./jopa &
 ```
