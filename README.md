@@ -5,6 +5,8 @@ Still developing...
 
 Usage
 -----
+```
 $ make
 $ jackd -ddummy
 $ ./jopa
+```
