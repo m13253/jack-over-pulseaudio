@@ -1,4 +1,4 @@
-Jack Audio Connection Kit over PulseAudio
+JACK Audio Connection Kit over PulseAudio
 =========================================
 
 Still developing...
