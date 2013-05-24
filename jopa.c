@@ -14,6 +14,8 @@ pa_sample_spec PulseSample = {
 };
 int PortNameSize = 0;
 char *TmpPortName = NULL;
+jack_nframes_t OutputBufferSize = 0;
+float *OutputBuffer = NULL;
 
 void cleanup()
 {
@@ -30,6 +32,11 @@ void cleanup()
         free(TmpPortName);
         TmpPortName = NULL;
     }
+    if(OutputBuffer)
+    {
+        free(OutputBuffer);
+        OutputBuffer = NULL;
+    }
 }
 
 void JackOnError(const char *desc)
@@ -43,24 +50,32 @@ void JackOnShutdown(void *arg)
     exit(0);
 }
 
-int JackOnProcess(jack_nframes_t nframes, void *arg)
+int JackOnBufferSize(jack_nframes_t nframes, void *arg)
 {
-    static float *L=NULL, *R=NULL, *LR=NULL;
-    static jack_nframes_t i;
-    L=jack_port_get_buffer(JackPorts[0], nframes);
-    R=jack_port_get_buffer(JackPorts[1], nframes);
-    LR=malloc(nframes*((sizeof LR)<<1));
-    if(!LR) {
+    if(OutputBuffer)
+        free(OutputBuffer);
+    OutputBufferSize=nframes<<1;
+    OutputBuffer=malloc(OutputBufferSize*sizeof *OutputBuffer);
+    if(!OutputBuffer) {
         fputs("Error: Cannot allocate memory.\n", stderr);
         cleanup();
         exit(1);
     }
-    for(i=0; i<nframes; ++i) {
-        LR[i<<1]=L[i];
-        LR[(i<<1)|1]=R[i];
+    fprintf(stderr, "Buffer size is %lu*2 channels*%lu bytes.\n", (unsigned long int) nframes, (unsigned long int) sizeof *OutputBuffer);
+    return 0;
+}
+
+int JackOnProcess(jack_nframes_t nframes, void *arg)
+{
+    static float *L=NULL, *R=NULL;
+    static jack_nframes_t i;
+    L=jack_port_get_buffer(JackPorts[0], nframes);
+    R=jack_port_get_buffer(JackPorts[1], nframes);
+    for(i=0; i<nframes && (i<<1)<OutputBufferSize; ++i) {
+        OutputBuffer[i<<1]=L[i];
+        OutputBuffer[(i<<1)|1]=R[i];
     }
-    pa_simple_write(hPulse, LR, nframes*((sizeof *LR)<<1), NULL);
-    free(LR);
+    pa_simple_write(hPulse, OutputBuffer, OutputBufferSize*sizeof *OutputBuffer, NULL);
     return 0;
 }
 
@@ -89,6 +104,7 @@ int main()
     }
     jack_set_error_function(JackOnError);
     jack_on_shutdown(hJack, JackOnShutdown, NULL);
+    jack_set_buffer_size_callback(hJack, JackOnBufferSize, NULL);
     jack_set_process_callback(hJack, JackOnProcess, NULL);
     jack_set_port_connect_callback(hJack, JackOnConnect, NULL);
     PulseSample.rate=jack_get_sample_rate(hJack);
@@ -98,7 +114,9 @@ int main()
         cleanup();
         return 1;
     }
-    fprintf(stderr, "Connected. Sample rate is %luHz.\n", (unsigned long int) PulseSample.rate);
+    fprintf(stderr, "Sample rate is %luHz.\n", (unsigned long int) PulseSample.rate);
+    /* JackOnBufferSize(jack_get_buffer_size(hJack), NULL);
+       Seems it automatically calls this, no need to call it manually. */
     PortNameSize=jack_port_name_size();
     TmpPortName=malloc(PortNameSize*sizeof *TmpPortName);
     if(!TmpPortName)
