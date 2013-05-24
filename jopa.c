@@ -66,17 +66,16 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
 
 void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg)
 {
-    jack_port_t *portb;
-    printf("a: %lu (%s)\nb: %lu (%s)\nc: %d\n", (unsigned long int) a, jack_port_name(jack_port_by_id(hJack, a)), (unsigned long int) b, jack_port_name(jack_port_by_id(hJack, b)), connect);
-    portb=jack_port_by_id(hJack, b);
+    const char *portaName=jack_port_name(jack_port_by_id(hJack, a));
+    jack_port_t *portb=jack_port_by_id(hJack, b);
+    fprintf(stderr, "Connect: %s %s %s\n", portaName, connect?"==>":"=X=", jack_port_name(portb));
     if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput))
     {
-        const char *portaname=jack_port_name(jack_port_by_id(hJack, a));
         snprintf(TmpPortName, PortNameSize, "%s:%s", jack_get_client_name(hJack), jack_port_short_name(portb));
         if(connect)
-            jack_connect(hJack, portaname, TmpPortName);
-        else if(jack_port_connected_to(jack_port_by_name(hJack, TmpPortName), portaname))
-            jack_disconnect(hJack, portaname, TmpPortName);
+            jack_connect(hJack, portaName, TmpPortName);
+        else if(jack_port_connected_to(jack_port_by_name(hJack, TmpPortName), portaName))
+            jack_disconnect(hJack, portaName, TmpPortName);
     }
 }
 
