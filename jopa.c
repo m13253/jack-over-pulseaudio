@@ -12,8 +12,8 @@ pa_sample_spec PulseSample = {
     .rate     = 48000,
     .channels = 2
 };
-int PortNameSize=0;
-char *TmpPortName=NULL;
+int PortNameSize = 0;
+char *TmpPortName = NULL;
 
 void cleanup()
 {
@@ -28,7 +28,7 @@ void cleanup()
     if(TmpPortName)
     {
         free(TmpPortName);
-        TmpPortName=NULL;
+        TmpPortName = NULL;
     }
 }
 
@@ -66,8 +66,8 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
 
 void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg)
 {
-    const char *portaName=jack_port_name(jack_port_by_id(hJack, a));
-    jack_port_t *portb=jack_port_by_id(hJack, b);
+    const char *portaName = jack_port_name(jack_port_by_id(hJack, a));
+    jack_port_t *portb = jack_port_by_id(hJack, b);
     fprintf(stderr, "Connect: %s %s %s\n", portaName, connect?"==>":"=X=", jack_port_name(portb));
     if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput))
     {
