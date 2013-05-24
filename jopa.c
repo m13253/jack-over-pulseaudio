@@ -12,6 +12,8 @@ pa_sample_spec PulseSample = {
     .rate     = 48000,
     .channels = 2
 };
+int PortNameSize=0;
+char *TmpPortName=NULL;
 
 void cleanup()
 {
@@ -22,6 +24,11 @@ void cleanup()
     if(hPulse) {
         pa_simple_free(hPulse);
         hPulse = NULL;
+    }
+    if(TmpPortName)
+    {
+        free(TmpPortName);
+        TmpPortName=NULL;
     }
 }
 
@@ -57,6 +64,22 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
     return 0;
 }
 
+void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg)
+{
+    jack_port_t *portb;
+    printf("a: %lu (%s)\nb: %lu (%s)\nc: %d\n", (unsigned long int) a, jack_port_name(jack_port_by_id(hJack, a)), (unsigned long int) b, jack_port_name(jack_port_by_id(hJack, b)), connect);
+    portb=jack_port_by_id(hJack, b);
+    if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput))
+    {
+        const char *portaname=jack_port_name(jack_port_by_id(hJack, a));
+        snprintf(TmpPortName, PortNameSize, "%s:%s", jack_get_client_name(hJack), jack_port_short_name(portb));
+        if(connect)
+            jack_connect(hJack, portaname, TmpPortName);
+        else if(jack_port_connected_to(jack_port_by_name(hJack, TmpPortName), portaname))
+            jack_disconnect(hJack, portaname, TmpPortName);
+    }
+}
+
 int main()
 {
     hJack=jack_client_open("JACK over PulseAudio", 0, NULL);
@@ -68,6 +91,7 @@ int main()
     jack_set_error_function(JackOnError);
     jack_on_shutdown(hJack, JackOnShutdown, NULL);
     jack_set_process_callback(hJack, JackOnProcess, NULL);
+    jack_set_port_connect_callback(hJack, JackOnConnect, NULL);
     PulseSample.rate=jack_get_sample_rate(hJack);
     hPulse=pa_simple_new(NULL, "JACK over PulseAudio", PA_STREAM_PLAYBACK, NULL, "jopa", &PulseSample, NULL, NULL, NULL);
     if(!hPulse) {
@@ -76,13 +100,26 @@ int main()
         return 1;
     }
     fprintf(stderr, "Connected. Sample rate is %luHz.\n", (unsigned long int) PulseSample.rate);
-    JackPorts[0]=jack_port_register(hJack, "left", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
-    JackPorts[1]=jack_port_register(hJack, "right", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+    PortNameSize=jack_port_name_size();
+    TmpPortName=malloc(PortNameSize*sizeof *TmpPortName);
+    if(!TmpPortName)
+    {
+        fputs("Error: Cannot allocate memory.\n", stderr);
+        cleanup();
+        return 1;
+    }
+    {
+    unsigned int i;
+    for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i)
+    {
+        snprintf(TmpPortName, PortNameSize, "playback_%u", i+1);
+        JackPorts[i]=jack_port_register(hJack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+    }
+    }
     if(jack_activate(hJack)) {
         fputs("Failed to activate JACK client.\n", stderr);
         cleanup();
         return 1;
     }
-    /* TODO: Now there should be port connections. */
     for(;;) sleep(1);
 }
