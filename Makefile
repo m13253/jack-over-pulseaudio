@@ -1,7 +1,7 @@
 
 .PHONY: all clean
 
-LIB=-lpulse-simple $(shell pkg-config --cflags --libs jack || echo -ljack)
+LIB=$(shell pkg-config --cflags --libs libpulse-simple || echo -lpulse-simple) $(shell pkg-config --cflags --libs jack || echo -ljack)
 CFLAGS=-Wall -Werror -O3 $(LIB)
 
 all: jopa
