@@ -9,12 +9,12 @@ jack_client_t *hJack = NULL;
 pa_simple *hPulse = NULL;
 pa_sample_spec PulseSample = {
     .format   = PA_SAMPLE_FLOAT32,
-    .rate     = 48000,
+    .rate     = 48000, /* <== jack_get_sample_rate() */
     .channels = 2
 };
-int PortNameSize = 0;
+int PortNameSize = 0; /* <== jack_port_name_size() */
 char *TmpPortName = NULL;
-jack_nframes_t OutputBufferSize = 0;
+jack_nframes_t OutputBufferSize = 0; /* <=== jack_get_buffer_size() */
 float *OutputBuffer = NULL;
 
 void cleanup()
