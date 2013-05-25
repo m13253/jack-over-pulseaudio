@@ -7,11 +7,7 @@
 jack_port_t *JackPorts[2];
 jack_client_t *hJack = NULL;
 pa_simple *hPulse = NULL;
-pa_sample_spec PulseSample = {
-    .format   = PA_SAMPLE_FLOAT32,
-    .rate     = 48000,
-    .channels = 2
-};
+pa_sample_spec PulseSample;
 int PortNameSize = 0;
 char *TmpPortName = NULL;
 jack_nframes_t OutputBufferSize = 0;
@@ -107,7 +103,10 @@ int main()
     jack_set_buffer_size_callback(hJack, JackOnBufferSize, NULL);
     jack_set_process_callback(hJack, JackOnProcess, NULL);
     jack_set_port_connect_callback(hJack, JackOnConnect, NULL);
-    PulseSample.rate=jack_get_sample_rate(hJack);
+    
+    PulseSample.format   = PA_SAMPLE_FLOAT32;
+    PulseSample.rate     = jack_get_sample_rate(hJack);
+    PulseSample.channels = 2;
     hPulse=pa_simple_new(NULL, "JACK over PulseAudio", PA_STREAM_PLAYBACK, NULL, "jopa", &PulseSample, NULL, NULL, NULL);
     if(!hPulse) {
         fputs("Failed to connect PulseAudio. Is PulseAudio server running?\n", stderr);
