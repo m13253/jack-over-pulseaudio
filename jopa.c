@@ -15,7 +15,11 @@ pa_sample_spec PulseSample = {
 int PortNameSize = 0; /* <== jack_port_name_size() */
 char *TmpPortName = NULL;
 jack_nframes_t OutputBufferSize = 0; /* <=== jack_get_buffer_size() */
-float *OutputBuffer = NULL;
+float *volatile OutputBuffer1 = NULL;
+float *volatile OutputBuffer2 = NULL;
+float *volatile OutputBuffer[2] = {NULL, NULL};
+pthread_mutex_t Mutex;
+pthread_mutex_t *pMutex = NULL;
 
 void cleanup()
 {
@@ -27,15 +31,21 @@ void cleanup()
         pa_simple_free(hPulse);
         hPulse = NULL;
     }
-    if(TmpPortName)
-    {
+    if(TmpPortName) {
         free(TmpPortName);
         TmpPortName = NULL;
     }
-    if(OutputBuffer)
-    {
-        free(OutputBuffer);
-        OutputBuffer = NULL;
+    if(OutputBuffer1) {
+        free(OutputBuffer1);
+        OutputBuffer1 = NULL;
+    }
+    if(OutputBuffer2) {
+        free(OutputBuffer2);
+        OutputBuffer2 = NULL;
+    }
+    if(pMutex) {
+        pthread_mutex_destroy(pMutex);
+        pMutex = NULL;
     }
 }
 
@@ -52,16 +62,22 @@ void JackOnShutdown(void *arg)
 
 int JackOnBufferSize(jack_nframes_t nframes, void *arg)
 {
-    if(OutputBuffer)
-        free(OutputBuffer);
+    if(OutputBuffer1) free(OutputBuffer1);
+    if(OutputBuffer2) free(OutputBuffer2);
     OutputBufferSize=nframes<<1;
-    OutputBuffer=malloc(OutputBufferSize*sizeof *OutputBuffer);
-    if(!OutputBuffer) {
+    OutputBuffer1=malloc(OutputBufferSize*sizeof *OutputBuffer1);
+    if(!OutputBuffer1) {
         fputs("Error: Cannot allocate memory.\n", stderr);
         cleanup();
         exit(1);
     }
-    fprintf(stderr, "Buffer size is %lu*2 channels*%lu bytes.\n", (unsigned long int) nframes, (unsigned long int) sizeof *OutputBuffer);
+    OutputBuffer2=malloc(OutputBufferSize*sizeof *OutputBuffer2);
+    if(!OutputBuffer2) {
+        fputs("Error: Cannot allocate memory.\n", stderr);
+        cleanup();
+        exit(1);
+    }
+    fprintf(stderr, "Buffer size is %lu*2 channels*%lu bytes.\n", (unsigned long int) nframes, (unsigned long int) sizeof *OutputBuffer1);
     return 0;
 }
 
@@ -69,13 +85,20 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
 {
     static float *L=NULL, *R=NULL;
     static jack_nframes_t i;
+    static float *OutputBufferNext;
     L=jack_port_get_buffer(JackPorts[0], nframes);
     R=jack_port_get_buffer(JackPorts[1], nframes);
+    if(OutputBuffer[1]) {
+        fputs("Warning: PulseAudio got stuck!\n", stderr);
+        return 0;
+    } else
+        OutputBufferNext=OutputBuffer[0]==OutputBuffer1?OutputBuffer2:OutputBuffer1;
     for(i=0; i<nframes && (i<<1)<OutputBufferSize; ++i) {
-        OutputBuffer[i<<1]=L[i];
-        OutputBuffer[(i<<1)|1]=R[i];
+        OutputBufferNext[i<<1]=L[i];
+        OutputBufferNext[(i<<1)|1]=R[i];
     }
-    pa_simple_write(hPulse, OutputBuffer, OutputBufferSize*sizeof *OutputBuffer, NULL);
+    OutputBuffer[1]=OutputBufferNext;
+    pthread_mutex_unlock(pMutex);
     return 0;
 }
 
@@ -84,8 +107,7 @@ void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg)
     const char *portaName = jack_port_name(jack_port_by_id(hJack, a));
     jack_port_t *portb = jack_port_by_id(hJack, b);
     fprintf(stderr, "Connect: %s %s %s\n", portaName, connect?"==>":"=X=", jack_port_name(portb));
-    if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput))
-    {
+    if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput)) {
         snprintf(TmpPortName, PortNameSize, "%s:%s", jack_get_client_name(hJack), jack_port_short_name(portb));
         if(connect)
             jack_connect(hJack, portaName, TmpPortName);
@@ -119,24 +141,38 @@ int main()
        Seems it automatically calls this, no need to call it manually. */
     PortNameSize=jack_port_name_size();
     TmpPortName=malloc(PortNameSize*sizeof *TmpPortName);
-    if(!TmpPortName)
-    {
+    if(!TmpPortName) {
         fputs("Error: Cannot allocate memory.\n", stderr);
         cleanup();
         return 1;
     }
     {
     unsigned int i;
-    for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i)
-    {
+    for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i) {
         snprintf(TmpPortName, PortNameSize, "playback_%u", i+1);
         JackPorts[i]=jack_port_register(hJack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
     }
+    }
+    if(!pthread_mutex_init(&Mutex, NULL))
+        pMutex=&Mutex;
+    else {
+        fputs("Error: Cannot allocate mutex.\n", stderr);
+        cleanup();
+        return 1;
     }
     if(jack_activate(hJack)) {
         fputs("Failed to activate JACK client.\n", stderr);
         cleanup();
         return 1;
     }
-    for(;;) sleep(1);
+    for(;;)
+        if(OutputBuffer[0]) {
+            pa_simple_write(hPulse, OutputBuffer[0], OutputBufferSize*sizeof *OutputBuffer[0], NULL);
+            OutputBuffer[0]=NULL;
+        } else if(OutputBuffer[1]) {
+            OutputBuffer[0]=OutputBuffer[1];
+            OutputBuffer[1]=NULL;
+        } else {
+            pthread_mutex_lock(pMutex); /* Wait for unlock in JackOnProcess() */
+        }
 }
