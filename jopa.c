@@ -27,13 +27,11 @@ void cleanup()
         pa_simple_free(hPulse);
         hPulse = NULL;
     }
-    if(TmpPortName)
-    {
+    if(TmpPortName) {
         free(TmpPortName);
         TmpPortName = NULL;
     }
-    if(OutputBuffer)
-    {
+    if(OutputBuffer) {
         free(OutputBuffer);
         OutputBuffer = NULL;
     }
@@ -84,8 +82,7 @@ void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg)
     const char *portaName = jack_port_name(jack_port_by_id(hJack, a));
     jack_port_t *portb = jack_port_by_id(hJack, b);
     fprintf(stderr, "Connect: %s %s %s\n", portaName, connect?"==>":"=X=", jack_port_name(portb));
-    if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput))
-    {
+    if((jack_port_flags(portb)&(JackPortIsPhysical|JackPortIsInput))==(JackPortIsPhysical|JackPortIsInput)) {
         snprintf(TmpPortName, PortNameSize, "%s:%s", jack_get_client_name(hJack), jack_port_short_name(portb));
         if(connect)
             jack_connect(hJack, portaName, TmpPortName);
@@ -119,16 +116,14 @@ int main()
        Seems it automatically calls this, no need to call it manually. */
     PortNameSize=jack_port_name_size();
     TmpPortName=malloc(PortNameSize*sizeof *TmpPortName);
-    if(!TmpPortName)
-    {
+    if(!TmpPortName) {
         fputs("Error: Cannot allocate memory.\n", stderr);
         cleanup();
         return 1;
     }
     {
     unsigned int i;
-    for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i)
-    {
+    for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i) {
         snprintf(TmpPortName, PortNameSize, "playback_%u", i+1);
         JackPorts[i]=jack_port_register(hJack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
     }
