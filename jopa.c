@@ -137,8 +137,6 @@ int main()
         return 1;
     }
     fprintf(stderr, "Sample rate is %luHz.\n", (unsigned long int) PulseSample.rate);
-    /* JackOnBufferSize(jack_get_buffer_size(hJack), NULL);
-       Seems it automatically calls this, no need to call it manually. */
     PortNameSize=jack_port_name_size();
     TmpPortName=malloc(PortNameSize*sizeof *TmpPortName);
     if(!TmpPortName) {
