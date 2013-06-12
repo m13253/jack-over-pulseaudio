@@ -1,8 +1,148 @@
+// vim: et ts=4 sw=4
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pulse/simple.h>
 #include <jack/jack.h>
+
+/******************** Buffer ********************/
+typedef struct Buffer {
+    size_t BufferSize;
+    float *volatile Buffers[2];
+    pthread_mutex_t Mutex;
+    unsigned char CurrentBuffer;
+    unsigned char FilledBufferCount;
+} Buffer;
+
+Buffer *NewBuffer(size_t BufferSize)
+{
+    Buffer *pBuf = malloc(sizeof(Buffer));
+    pBuf->BufferSize = BufferSize;
+    pBuf->CurrentBuffer = 0;
+    pBuf->FilledBufferCount = 0;
+    if(pthread_mutex_init(&pBuf->Mutex, NULL)) {
+        fputs("Error: Cannot allocate mutex.\n", stderr);
+        return NULL;
+    }
+    pBuf->Buffers[0] = malloc(BufferSize*sizeof **pBuf->Buffers);
+    if(!pBuf->Buffers[0]) {
+        fputs("Error: Cannot allocate memory.\n", stderr);
+        pthread_mutex_destroy(&pBuf->Mutex);
+        free(pBuf);
+        return NULL;
+    }
+    pBuf->Buffers[1] = malloc(BufferSize*sizeof **pBuf->Buffers);
+    if(!pBuf->Buffers[1]) {
+        fputs("Error: Cannot allocate memory.\n", stderr);
+        pthread_mutex_destroy(&pBuf->Mutex);
+        free(pBuf->Buffers[0]);
+        free(pBuf);
+        return NULL;
+    }
+    return pBuf;
+}
+
+void DeleteBuffer(Buffer *pBuf)
+{
+    free(pBuf->Buffers[0]);
+    free(pBuf->Buffers[1]);
+    pthread_mutex_destroy(&pBuf->Mutex);
+    free(pBuf);
+}
+
+inline void LockBuffer(Buffer *pBuf)
+{
+    pthread_mutex_lock(&pBuf->Mutex);
+}
+
+inline void UnlockBuffer(Buffer *pBuf)
+{
+    pthread_mutex_unlock(&pBuf->Mutex);
+}
+
+inline void SetBufferFilled(Buffer *pBuf)
+{
+    pBuf->FilledBufferCount++;
+}
+
+inline size_t GetBufferSize(Buffer *pBuf)
+{
+    return pBuf->BufferSize;
+}
+
+inline float *volatile GetUnusedBuffer(Buffer *pBuf)
+{
+    if(pBuf->FilledBufferCount == 2)
+        return NULL;
+    float *volatile UnusedBuffer = NULL;
+    LockBuffer(pBuf);
+    UnusedBuffer = pBuf->Buffers[pBuf->CurrentBuffer];
+    pBuf->CurrentBuffer = !pBuf->CurrentBuffer;
+    UnlockBuffer(pBuf);
+    return UnusedBuffer;
+}
+
+inline float *volatile GetUsedBuffer(Buffer *pBuf)
+{
+    if(!pBuf->FilledBufferCount)
+        return NULL;
+    float *volatile UsedBuffer = NULL;
+    LockBuffer(pBuf);
+    if(pBuf->FilledBufferCount == 1)
+        UsedBuffer = pBuf->Buffers[!pBuf->CurrentBuffer];
+    else /*if(pBuf->FilledBufferCount == 2)*/
+        UsedBuffer = pBuf->Buffers[ pBuf->CurrentBuffer];
+    pBuf->FilledBufferCount--;
+    UnlockBuffer(pBuf);
+    return UsedBuffer;
+}
+
+inline void WriteBufferToPulse(Buffer *pBuf, pa_simple *hPulse)
+{
+    float *volatile TmpBuffer = GetUsedBuffer(pBuf);
+    if(TmpBuffer)
+        pa_simple_write(hPulse, TmpBuffer, GetBufferSize(pBuf)*sizeof **pBuf->Buffers, NULL);
+}
+/**************** End of Buffer *****************/
+
+/****************** Suspender *******************/
+/* TODO: A better name */
+/* TODO: Is pthread_cond_wait a better solution? */
+
+typedef pthread_mutex_t Suspender;
+
+Suspender *NewSuspender()
+{
+    Suspender *pSus = malloc(sizeof(Suspender));
+    if(!pSus) {
+        fputs("Error: Cannot allocate memory for suspender.\n", stderr);
+        return NULL;
+    }
+    if(pthread_mutex_init(pSus, NULL)) {
+        fputs("Error: Cannot init suspender.\n", stderr);
+        free(pSus);
+        return NULL;
+    }
+    pthread_mutex_lock(pSus); /* initial lock */
+    return pSus;
+}
+
+void DeleteSuspender(Suspender *pSus)
+{
+    pthread_mutex_unlock(pSus);
+    pthread_mutex_destroy(pSus);
+}
+
+void Suspend(Suspender *pSus)
+{
+    pthread_mutex_lock(pSus); /* locking after initial lock causes suspending. */
+}
+
+void WakeUp(Suspender *pSus)
+{
+    pthread_mutex_unlock(pSus);
+}
+/************** End of Suspender ****************/
 
 jack_port_t *JackPorts[2];
 jack_client_t *hJack = NULL;
@@ -14,12 +154,8 @@ pa_sample_spec PulseSample = {
 };
 int PortNameSize = 0; /* <== jack_port_name_size() */
 char *TmpPortName = NULL;
-jack_nframes_t OutputBufferSize = 0; /* <=== jack_get_buffer_size() */
-float *volatile OutputBuffer1 = NULL;
-float *volatile OutputBuffer2 = NULL;
-float *volatile OutputBuffer[2] = {NULL, NULL};
-pthread_mutex_t Mutex;
-pthread_mutex_t *pMutex = NULL;
+Buffer *pOutputBuffer = NULL;
+Suspender *pSuspenderMainloop = NULL;
 
 void cleanup()
 {
@@ -35,17 +171,14 @@ void cleanup()
         free(TmpPortName);
         TmpPortName = NULL;
     }
-    if(OutputBuffer1) {
-        free(OutputBuffer1);
-        OutputBuffer1 = NULL;
+    if(pOutputBuffer) {
+        DeleteBuffer(pOutputBuffer);
+        pOutputBuffer = NULL;
     }
-    if(OutputBuffer2) {
-        free(OutputBuffer2);
-        OutputBuffer2 = NULL;
-    }
-    if(pMutex) {
-        pthread_mutex_destroy(pMutex);
-        pMutex = NULL;
+    if(pSuspenderMainloop) {
+        /* TODO: Should I wake it up before deleting? */
+        DeleteSuspender(pSuspenderMainloop);
+        pSuspenderMainloop = NULL;
     }
 }
 
@@ -62,22 +195,14 @@ void JackOnShutdown(void *arg)
 
 int JackOnBufferSize(jack_nframes_t nframes, void *arg)
 {
-    if(OutputBuffer1) free(OutputBuffer1);
-    if(OutputBuffer2) free(OutputBuffer2);
-    OutputBufferSize=nframes<<1;
-    OutputBuffer1=malloc(OutputBufferSize*sizeof *OutputBuffer1);
-    if(!OutputBuffer1) {
-        fputs("Error: Cannot allocate memory.\n", stderr);
+    if(pOutputBuffer)
+        DeleteBuffer(pOutputBuffer);
+    pOutputBuffer = NewBuffer(nframes<<1);
+    if(!pOutputBuffer) {
         cleanup();
         exit(1);
     }
-    OutputBuffer2=malloc(OutputBufferSize*sizeof *OutputBuffer2);
-    if(!OutputBuffer2) {
-        fputs("Error: Cannot allocate memory.\n", stderr);
-        cleanup();
-        exit(1);
-    }
-    fprintf(stderr, "Buffer size is %lu*2 channels*%lu bytes.\n", (unsigned long int) nframes, (unsigned long int) sizeof *OutputBuffer1);
+    fprintf(stderr, "Buffer size is %lu*2 channels*%lu bytes.\n", (unsigned long) nframes, (unsigned long) sizeof **pOutputBuffer->Buffers/*FIXME*/);
     return 0;
 }
 
@@ -86,19 +211,19 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
     static float *L=NULL, *R=NULL;
     static jack_nframes_t i;
     static float *OutputBufferNext;
-    L=jack_port_get_buffer(JackPorts[0], nframes);
-    R=jack_port_get_buffer(JackPorts[1], nframes);
-    if(OutputBuffer[1]) {
+    OutputBufferNext = GetUnusedBuffer(pOutputBuffer);
+    if(!OutputBufferNext) {
         fputs("Warning: PulseAudio got stuck!\n", stderr);
         return 0;
-    } else
-        OutputBufferNext=OutputBuffer[0]==OutputBuffer1?OutputBuffer2:OutputBuffer1;
-    for(i=0; i<nframes && (i<<1)<OutputBufferSize; ++i) {
+    }
+    L=jack_port_get_buffer(JackPorts[0], nframes);
+    R=jack_port_get_buffer(JackPorts[1], nframes);
+    for(i=0; i<nframes && (i<<1)<GetBufferSize(pOutputBuffer); ++i) {
         OutputBufferNext[i<<1]=L[i];
         OutputBufferNext[(i<<1)|1]=R[i];
     }
-    OutputBuffer[1]=OutputBufferNext;
-    pthread_mutex_unlock(pMutex);
+    SetBufferFilled(pOutputBuffer);
+    WakeUp(pSuspenderMainloop);
     return 0;
 }
 
@@ -145,16 +270,14 @@ int main()
         return 1;
     }
     {
-    unsigned int i;
-    for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i) {
-        snprintf(TmpPortName, PortNameSize, "playback_%u", i+1);
-        JackPorts[i]=jack_port_register(hJack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        unsigned int i;
+        for(i=0; i<sizeof JackPorts/sizeof JackPorts[0]; ++i) {
+            snprintf(TmpPortName, PortNameSize, "playback_%u", i+1);
+            JackPorts[i]=jack_port_register(hJack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        }
     }
-    }
-    if(!pthread_mutex_init(&Mutex, NULL))
-        pMutex=&Mutex;
-    else {
-        fputs("Error: Cannot allocate mutex.\n", stderr);
+    pSuspenderMainloop = NewSuspender();
+    if(!pSuspenderMainloop) {
         cleanup();
         return 1;
     }
@@ -163,14 +286,8 @@ int main()
         cleanup();
         return 1;
     }
-    for(;;)
-        if(OutputBuffer[0]) {
-            pa_simple_write(hPulse, OutputBuffer[0], OutputBufferSize*sizeof *OutputBuffer[0], NULL);
-            OutputBuffer[0]=NULL;
-        } else if(OutputBuffer[1]) {
-            OutputBuffer[0]=OutputBuffer[1];
-            OutputBuffer[1]=NULL;
-        } else {
-            pthread_mutex_lock(pMutex); /* Wait for unlock in JackOnProcess() */
-        }
+    for(;;) {
+        Suspend(pSuspenderMainloop);
+        WriteBufferToPulse(pOutputBuffer, hPulse);
+    }
 }
