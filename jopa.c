@@ -118,7 +118,7 @@ void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg)
 
 int main()
 {
-    hJack=jack_client_open("JACK over PulseAudio", 0, NULL);
+    hJack=jack_client_open("JACK over PulseAudio", JackNoStartServer, NULL);
     if(!hJack) {
         fputs("Failed to connect JACK. Is jackd running?\n", stderr);
         cleanup();
