@@ -20,7 +20,7 @@ Buffer *NewBuffer(size_t BufferSize)
     pBuf->BufferSize = BufferSize;
     pBuf->CurrentBuffer = 0;
     pBuf->FilledBufferCount = 0;
-    if (pthread_mutex_init(&pBuf->Mutex, NULL)) {
+    if(pthread_mutex_init(&pBuf->Mutex, NULL)) {
         fputs("Error: Cannot allocate mutex.\n", stderr);
         return NULL;
     }
@@ -114,11 +114,11 @@ typedef pthread_mutex_t Suspender;
 Suspender *NewSuspender()
 {
     Suspender *pSus = malloc(sizeof(Suspender));
-    if (!pSus) {
+    if(!pSus) {
         fputs("Error: Cannot allocate memory for suspender.\n", stderr);
         return NULL;
     }
-    if (pthread_mutex_init(pSus, NULL)) {
+    if(pthread_mutex_init(pSus, NULL)) {
         fputs("Error: Cannot init suspender.\n", stderr);
         free(pSus);
         return NULL;
@@ -195,10 +195,10 @@ void JackOnShutdown(void *arg)
 
 int JackOnBufferSize(jack_nframes_t nframes, void *arg)
 {
-    if (pOutputBuffer)
+    if(pOutputBuffer)
         DeleteBuffer(pOutputBuffer);
     pOutputBuffer = NewBuffer(nframes<<1);
-    if (!pOutputBuffer) {
+    if(!pOutputBuffer) {
         cleanup();
         exit(1);
     }
@@ -212,7 +212,7 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
     static jack_nframes_t i;
     static float *OutputBufferNext;
     OutputBufferNext = GetUnusedBuffer(pOutputBuffer);
-    if (!OutputBufferNext) {
+    if(!OutputBufferNext) {
         fputs("Warning: PulseAudio got stuck!\n", stderr);
         return 0;
     }
@@ -277,6 +277,10 @@ int main()
         }
     }
     pSuspenderMainloop = NewSuspender();
+    if(!pSuspenderMainloop) {
+        cleanup();
+        return 1;
+    }
     if(jack_activate(hJack)) {
         fputs("Failed to activate JACK client.\n", stderr);
         cleanup();
