@@ -9,27 +9,32 @@
 typedef struct Buffer {
     size_t BufferSize;
     float *volatile Buffers[2];
+    pthread_mutex_t Mutex;
     unsigned char CurrentBuffer;
     unsigned char FilledBufferCount;
-    unsigned char Locked;
 } Buffer;
 
-inline Buffer *NewBuffer(size_t BufferSize)
+Buffer *NewBuffer(size_t BufferSize)
 {
     Buffer *pBuf = malloc(sizeof(Buffer));
     pBuf->BufferSize = BufferSize;
     pBuf->CurrentBuffer = 0;
-    pBuf->Locked = 0;
     pBuf->FilledBufferCount = 0;
+    if (pthread_mutex_init(&pBuf->Mutex, NULL)) {
+        fputs("Error: Cannot allocate mutex.\n", stderr);
+        return NULL;
+    }
     pBuf->Buffers[0] = malloc(BufferSize*sizeof **pBuf->Buffers);
     if(!pBuf->Buffers[0]) {
         fputs("Error: Cannot allocate memory.\n", stderr);
+        pthread_mutex_destroy(&pBuf->Mutex);
         free(pBuf);
         return NULL;
     }
     pBuf->Buffers[1] = malloc(BufferSize*sizeof **pBuf->Buffers);
     if(!pBuf->Buffers[1]) {
         fputs("Error: Cannot allocate memory.\n", stderr);
+        pthread_mutex_destroy(&pBuf->Mutex);
         free(pBuf->Buffers[0]);
         free(pBuf);
         return NULL;
@@ -37,35 +42,35 @@ inline Buffer *NewBuffer(size_t BufferSize)
     return pBuf;
 }
 
-inline void DeleteBuffer(Buffer * pBuf)
+void DeleteBuffer(Buffer *pBuf)
 {
     free(pBuf->Buffers[0]);
     free(pBuf->Buffers[1]);
+    pthread_mutex_destroy(&pBuf->Mutex);
     free(pBuf);
 }
 
-inline void LockBuffer(Buffer * pBuf)
+inline void LockBuffer(Buffer *pBuf)
 {
-    while(pBuf->Locked);
-    pBuf->Locked = 1;
+    pthread_mutex_lock(&pBuf->Mutex);
 }
 
-inline void UnlockBuffer(Buffer * pBuf)
+inline void UnlockBuffer(Buffer *pBuf)
 {
-    pBuf->Locked = 0;
+    pthread_mutex_unlock(&pBuf->Mutex);
 }
 
-inline void SetBufferFilled(Buffer * pBuf)
+inline void SetBufferFilled(Buffer *pBuf)
 {
     pBuf->FilledBufferCount++;
 }
 
-inline size_t GetBufferSize(Buffer * pBuf)
+inline size_t GetBufferSize(Buffer *pBuf)
 {
     return pBuf->BufferSize;
 }
 
-inline float *volatile GetUnusedBuffer(Buffer * pBuf)
+inline float *volatile GetUnusedBuffer(Buffer *pBuf)
 {
     if(pBuf->FilledBufferCount == 2)
         return NULL;
@@ -77,7 +82,7 @@ inline float *volatile GetUnusedBuffer(Buffer * pBuf)
     return UnusedBuffer;
 }
 
-inline float *volatile GetUsedBuffer(Buffer * pBuf)
+inline float *volatile GetUsedBuffer(Buffer *pBuf)
 {
     if(!pBuf->FilledBufferCount)
         return NULL;
@@ -92,6 +97,12 @@ inline float *volatile GetUsedBuffer(Buffer * pBuf)
     return UsedBuffer;
 }
 
+inline void WriteBufferToPulse(Buffer *pBuf, pa_simple *hPulse)
+{
+    float *volatile TmpBuffer = GetUsedBuffer(pBuf);
+    if(TmpBuffer)
+        pa_simple_write(hPulse, TmpBuffer, GetBufferSize(pBuf)*sizeof **pBuf->Buffers, NULL);
+}
 
 //////////////////// End of Buffer //////////////////////
 
@@ -105,7 +116,7 @@ pa_sample_spec PulseSample = {
 };
 int PortNameSize = 0; /* <== jack_port_name_size() */
 char *TmpPortName = NULL;
-Buffer * pOutputBuffer;
+Buffer *pOutputBuffer;
 
 void cleanup()
 {
@@ -168,7 +179,6 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
         OutputBufferNext[(i<<1)|1]=R[i];
     }
     SetBufferFilled(pOutputBuffer);
-    fputs("F.\n", stderr);
     return 0;
 }
 
@@ -226,11 +236,6 @@ int main()
         cleanup();
         return 1;
     }
-    for(;;) {
-        float *volatile OutputBuffer = GetUsedBuffer(pOutputBuffer);
-        if(OutputBuffer) {
-            pa_simple_write(hPulse, OutputBuffer, GetBufferSize(pOutputBuffer)*sizeof **pOutputBuffer->Buffers, NULL);
-            fputs("U.\n", stderr);
-        }
-    }
+    for(;;)
+        WriteBufferToPulse(pOutputBuffer, hPulse);
 }
