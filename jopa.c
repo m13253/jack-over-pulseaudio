@@ -5,7 +5,7 @@
 #include <pulse/simple.h>
 #include <jack/jack.h>
 
-//////////////////////// Buffer /////////////////////////
+/******************** Buffer ********************/
 typedef struct Buffer {
     size_t BufferSize;
     float *volatile Buffers[2];
@@ -90,7 +90,7 @@ inline float *volatile GetUsedBuffer(Buffer *pBuf)
     LockBuffer(pBuf);
     if(pBuf->FilledBufferCount == 1)
         UsedBuffer = pBuf->Buffers[!pBuf->CurrentBuffer];
-    else //if(pBuf->FilledBufferCount == 2)
+    else /*if(pBuf->FilledBufferCount == 2)*/
         UsedBuffer = pBuf->Buffers[ pBuf->CurrentBuffer];
     pBuf->FilledBufferCount--;
     UnlockBuffer(pBuf);
@@ -103,12 +103,12 @@ inline void WriteBufferToPulse(Buffer *pBuf, pa_simple *hPulse)
     if(TmpBuffer)
         pa_simple_write(hPulse, TmpBuffer, GetBufferSize(pBuf)*sizeof **pBuf->Buffers, NULL);
 }
+/**************** End of Buffer *****************/
 
-//////////////////// End of Buffer //////////////////////
+/****************** Suspender *******************/
+/* TODO: A better name */
+/* TODO: Is pthread_cond_wait a better solution? */
 
-// TODO: A better name
-//////////////////////// Suspender /////////////////////////
-// TODO: Is pthread_cond_wait a better solution?
 typedef pthread_mutex_t Suspender;
 
 Suspender *NewSuspender()
@@ -123,7 +123,7 @@ Suspender *NewSuspender()
         free(pSus);
         return NULL;
     }
-    pthread_mutex_lock(pSus); // initial lock
+    pthread_mutex_lock(pSus); /* initial lock */
     return pSus;
 }
 
@@ -135,15 +135,14 @@ void DeleteSuspender(Suspender *pSus)
 
 void Suspend(Suspender *pSus)
 {
-    pthread_mutex_lock(pSus); // locking after initial lock causes suspending.
+    pthread_mutex_lock(pSus); /* locking after initial lock causes suspending. */
 }
 
 void WakeUp(Suspender *pSus)
 {
     pthread_mutex_unlock(pSus);
 }
-
-//////////////////// End of Suspender //////////////////////
+/************** End of Suspender ****************/
 
 jack_port_t *JackPorts[2];
 jack_client_t *hJack = NULL;
@@ -177,7 +176,7 @@ void cleanup()
         pOutputBuffer = NULL;
     }
     if(pSuspenderMainloop) {
-        // TODO: Should I wake it up before deleting?
+        /* TODO: Should I wake it up before deleting? */
         DeleteSuspender(pSuspenderMainloop);
         pSuspenderMainloop = NULL;
     }
