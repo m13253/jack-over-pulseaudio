@@ -5,7 +5,7 @@
 #include <pulse/simple.h>
 #include <jack/jack.h>
 
-/////////////////////// Buffer ///////////////////////
+//////////////////////// Buffer /////////////////////////
 typedef struct Buffer {
     size_t BufferSize;
     float *volatile Buffers[2];
@@ -106,6 +106,45 @@ inline void WriteBufferToPulse(Buffer *pBuf, pa_simple *hPulse)
 
 //////////////////// End of Buffer //////////////////////
 
+// TODO: A better name
+//////////////////////// Suspender /////////////////////////
+// TODO: Is pthread_cond_wait a better solution?
+typedef pthread_mutex_t Suspender;
+
+Suspender *NewSuspender()
+{
+    Suspender *pSus = malloc(sizeof(Suspender));
+    if (!pSus) {
+        fputs("Error: Cannot allocate memory for suspender.\n", stderr);
+        return NULL;
+    }
+    if (pthread_mutex_init(pSus, NULL)) {
+        fputs("Error: Cannot init suspender.\n", stderr);
+        free(pSus);
+        return NULL;
+    }
+    pthread_mutex_lock(pSus); // initial lock
+    return pSus;
+}
+
+void DeleteSuspender(Suspender *pSus)
+{
+    pthread_mutex_unlock(pSus);
+    pthread_mutex_destroy(pSus);
+}
+
+void Suspend(Suspender *pSus)
+{
+    pthread_mutex_lock(pSus); // locking after initial lock causes suspending.
+}
+
+void WakeUp(Suspender *pSus)
+{
+    pthread_mutex_unlock(pSus);
+}
+
+//////////////////// End of Suspender //////////////////////
+
 jack_port_t *JackPorts[2];
 jack_client_t *hJack = NULL;
 pa_simple *hPulse = NULL;
@@ -116,7 +155,8 @@ pa_sample_spec PulseSample = {
 };
 int PortNameSize = 0; /* <== jack_port_name_size() */
 char *TmpPortName = NULL;
-Buffer *pOutputBuffer;
+Buffer *pOutputBuffer = NULL;
+Suspender *pSuspenderMainloop = NULL;
 
 void cleanup()
 {
@@ -135,6 +175,11 @@ void cleanup()
     if(pOutputBuffer) {
         DeleteBuffer(pOutputBuffer);
         pOutputBuffer = NULL;
+    }
+    if(pSuspenderMainloop) {
+        // TODO: Should I wake it up before deleting?
+        DeleteSuspender(pSuspenderMainloop);
+        pSuspenderMainloop = NULL;
     }
 }
 
@@ -179,6 +224,7 @@ int JackOnProcess(jack_nframes_t nframes, void *arg)
         OutputBufferNext[(i<<1)|1]=R[i];
     }
     SetBufferFilled(pOutputBuffer);
+    WakeUp(pSuspenderMainloop);
     return 0;
 }
 
@@ -231,11 +277,14 @@ int main()
             JackPorts[i]=jack_port_register(hJack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
         }
     }
+    pSuspenderMainloop = NewSuspender();
     if(jack_activate(hJack)) {
         fputs("Failed to activate JACK client.\n", stderr);
         cleanup();
         return 1;
     }
-    for(;;)
+    for(;;) {
+        Suspend(pSuspenderMainloop);
         WriteBufferToPulse(pOutputBuffer, hPulse);
+    }
 }
