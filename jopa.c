@@ -65,6 +65,11 @@ inline void SetBufferFilled(Buffer *pBuf)
     pBuf->FilledBufferCount++;
 }
 
+inline void SetBufferUnfilled(Buffer *pBuf)
+{
+    pBuf->FilledBufferCount--;
+}
+
 inline size_t GetBufferSize(Buffer *pBuf)
 {
     return pBuf->BufferSize;
@@ -92,7 +97,6 @@ inline float *volatile GetUsedBuffer(Buffer *pBuf)
         UsedBuffer = pBuf->Buffers[!pBuf->CurrentBuffer];
     else /*if(pBuf->FilledBufferCount == 2)*/
         UsedBuffer = pBuf->Buffers[ pBuf->CurrentBuffer];
-    pBuf->FilledBufferCount--;
     UnlockBuffer(pBuf);
     return UsedBuffer;
 }
@@ -102,6 +106,7 @@ inline void WriteBufferToPulse(Buffer *pBuf, pa_simple *hPulse)
     float *volatile TmpBuffer = GetUsedBuffer(pBuf);
     if(TmpBuffer)
         pa_simple_write(hPulse, TmpBuffer, GetBufferSize(pBuf)*sizeof **pBuf->Buffers, NULL);
+    SetBufferUnfilled(pBuf);
 }
 /**************** End of Buffer *****************/
 
