@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include <pthread.h>
+#include <jack/jack.h>
 #include <pulse/simple.h>
 #include <pulse/error.h>
+
+#define CallOrNull(func, var) { if((var)) { (func)((var)); (var) = NULL; } }
 
 pa_simple *PulseAudio = NULL;
 pa_sample_spec PulseSample = {
@@ -9,6 +12,10 @@ pa_sample_spec PulseSample = {
     .rate = 48000,
     .channels = 2
 };
+
+void cleanup() {
+    CallOrNull(pa_simple_free, PulseAudio);
+}
 
 int main(int argc, char *argv[]) {
     int ErrorCode;
@@ -26,5 +33,6 @@ int main(int argc, char *argv[]) {
     ))) {
         fprintf(stderr, "Cannot open a stream for playback.\n");
     }
+    cleanup();
     return 0;
 }
