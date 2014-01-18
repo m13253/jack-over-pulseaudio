@@ -12,11 +12,12 @@ pthread_mutex_t DataReadyPlayMutex;
 pa_simple *PulseAudio = NULL;
 pa_sample_spec PulseSample = {
     .format = PA_SAMPLE_FLOAT32,
-    .rate = 48000,
+    .rate = 48000, /* jack_get_sample_rate */
     .channels = 2
 };
 jack_client_t *Jack = NULL;
-int JackPortNameSize = 0;
+int JackPortNameSize = 0; /* jack_port_name_size */
+jack_nframes_t JackBufferSize = 0; /* jack_get_buffer_size() */
 int isJackQuitting = 0;
 
 void cleanup() {
@@ -37,6 +38,8 @@ void JackOnShutdown(void *arg) {
 }
 
 int JackOnBufferSize(jack_nframes_t nframes, void *arg) {
+    JackBufferSize = nframes;
+    fprintf(stderr, "Buffer size is %lu samples.\n", nframes);
     return 0;
 }
 
@@ -69,11 +72,13 @@ int main(int argc, char *argv[]) {
     isJackQuitting = 0;
     jack_set_error_function(JackOnError);
     jack_on_shutdown(Jack, JackOnShutdown, NULL);
-    jack_set_buffer_size_callback(Jack, JackOnBufferSize, NULL);
     jack_set_process_callback(Jack, JackOnProcess, NULL);
     jack_set_port_connect_callback(Jack, JackOnConnect, NULL);
-    PulseSample.rate=jack_get_sample_rate(Jack);
-    if(!(PulseAudio = pa_simple_new(
+    jack_set_buffer_size_callback(Jack, JackOnBufferSize, NULL);
+    JackOnBufferSize(jack_get_buffer_size(Jack), NULL);
+    JackPortNameSize = jack_port_name_size();
+    PulseSample.rate = jack_get_sample_rate(Jack);
+    PulseAudio = pa_simple_new(
             /* server */ NULL, 
             /* name */ "Jack over PulseAudio",
             /* dir */ PA_STREAM_PLAYBACK,
@@ -83,13 +88,13 @@ int main(int argc, char *argv[]) {
             /* map */ NULL,
             /* attr */ NULL,
             /* error */ &ErrorCode
-    ))) {
+    );
+    if(!PulseAudio) {
         fprintf(stderr, "Cannot open a stream for playback: %s\n", pa_strerror(ErrorCode));
         cleanup();
         return 1;
     }
     fprintf(stderr, "Sample rate is %luHz.\n", (unsigned long int) PulseSample.rate);
-    JackPortNameSize = jack_port_name_size();
     ErrorCode = jack_activate(Jack);
     if(ErrorCode) {
         fputs("Failed to activate JACK client.\n", stderr);
