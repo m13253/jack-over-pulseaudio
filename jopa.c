@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -21,7 +22,7 @@ pa_sample_spec PulseSample = {
     .channels = nChannels
 };
 jack_client_t *Jack = NULL;
-int JackPortNameSize = 0; /* jack_port_name_size */
+size_t JackPortNameSize = 0; /* jack_port_name_size */
 volatile jack_nframes_t JackBufferSize = 0; /* jack_get_buffer_size() */
 volatile int isJackQuitting = 0;
 
@@ -53,10 +54,11 @@ int JackOnBufferSize(jack_nframes_t nframes, void *arg) {
     JackBufferSize = nframes;
     fprintf(stderr, "Buffer size is %lu samples.\n", (unsigned long int) nframes);
     for(i = 0; i<nChannels; i++) {
-        tmpBufferPlay1 = jack_ringbuffer_create(JackBufferSize*sizeof (float)*4);
+        tmpBufferPlay1 = jack_ringbuffer_create(JackBufferSize*sizeof (float)*4+1);
         if(!tmpBufferPlay1) {
             fputs("Failed to allocate buffer.\n", stderr);
             isJackQuitting = 1;
+            pthread_cond_broadcast(&DataReadyPlay);
             return 1;
         }
         tmpBufferPlay2 = BufferPlay[i];
@@ -72,18 +74,23 @@ void JackOnConnect(jack_port_id_t a, jack_port_id_t b, int connect, void *arg) {
 
 int JackOnProcess(jack_nframes_t nframes, void *arg) {
     static float *buf[nChannels] = {NULL};
+    size_t BytesWritten;
     unsigned int i;
     for(i = 0; i<nChannels; i++)
         buf[i] = jack_port_get_buffer(JackPortPlay[i], nframes);
-    for(i = 0; i<nChannels; i++)
-        jack_ringbuffer_write(BufferPlay[i], (void *) buf[i], nframes*sizeof (float));
+    for(i = 0; i<nChannels; i++) {
+        BytesWritten = jack_ringbuffer_write(BufferPlay[i], (void *) buf[i], nframes*sizeof (float));
+        if(BytesWritten!=nframes*sizeof (float))
+            fprintf(stderr, "Playback buffer overflow: %zu!=%zu\n", BytesWritten, nframes*sizeof (float));
+    }
     pthread_cond_broadcast(&DataReadyPlay);
+    fprintf(stderr, "I: %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32"\n", ((uint32_t *) buf[0])[0], ((uint32_t *) buf[1])[0], ((uint32_t *) buf[0])[1], ((uint32_t *) buf[1])[1], ((uint32_t *) buf[0])[2], ((uint32_t *) buf[1])[2], ((uint32_t *) buf[0])[3], ((uint32_t *) buf[1])[3]);
     return 0;
 }
 
 int main(int argc, char *argv[]) {
     int ErrorCode;
-    unsigned long int i;
+    unsigned int i;
 
     ErrorCode = pthread_cond_init(&DataReadyPlay, NULL);
     if(ErrorCode) {
@@ -105,7 +112,7 @@ int main(int argc, char *argv[]) {
     jack_set_error_function(JackOnError);
     jack_on_shutdown(Jack, JackOnShutdown, NULL);
     PulseSample.rate = jack_get_sample_rate(Jack);
-    fprintf(stderr, "Sample rate is %luHz.\n", (unsigned long int) PulseSample.rate);
+    fprintf(stderr, "Sample rate is %"PRIu32"Hz.\n", (uint32_t) PulseSample.rate);
     jack_set_buffer_size_callback(Jack, JackOnBufferSize, NULL);
     JackOnBufferSize(jack_get_buffer_size(Jack), (void *) 1);
     JackPortNameSize = jack_port_name_size();
@@ -114,7 +121,7 @@ int main(int argc, char *argv[]) {
     {
         char TmpPortName[20];
         for(i = 0; i<nChannels; i++) {
-            snprintf(TmpPortName, JackPortNameSize, "playback_%lu", i+1);
+            snprintf(TmpPortName, JackPortNameSize, "playback_%u", i+1);
             JackPortPlay[i] = jack_port_register(Jack, TmpPortName, JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
         }
     }
@@ -146,7 +153,7 @@ int main(int argc, char *argv[]) {
         static float *PulseBufferPlay[nChannels] = {NULL};
         static float *PulseBufferPlayMix = NULL;
         static size_t PulseBufferPlayReadCount[nChannels+1] = {0};
-        unsigned long int i, j;
+        uintptr_t j;
         if(JackBufferSize!=PulseBufferSize) {
             PulseBufferSize = JackBufferSize;
             CallOrNull(free, PulseBufferPlayMix);
@@ -161,14 +168,18 @@ int main(int argc, char *argv[]) {
             break;
         PulseBufferPlayReadCount[nChannels] = PulseBufferSize;
         for(i = 0; i<nChannels; i++) {
-            PulseBufferPlayReadCount[i] = jack_ringbuffer_read(BufferPlay[i], (void *) PulseBufferPlay[i], PulseBufferSize);
+            PulseBufferPlayReadCount[i] = jack_ringbuffer_read(BufferPlay[i], (void *) PulseBufferPlay[i], PulseBufferSize*sizeof (float))/sizeof (float);
+            if(PulseBufferPlayReadCount[i]!=PulseBufferSize)
+                fprintf(stderr, "Playback buffer underflow: %zu!=%zu\n", PulseBufferPlayReadCount[i], PulseBufferSize);
             if(PulseBufferPlayReadCount[i]<PulseBufferPlayReadCount[nChannels])
                 PulseBufferPlayReadCount[nChannels] = PulseBufferPlayReadCount[i];
         }
+        fprintf(stderr, "M: %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32"\n", ((uint32_t *) PulseBufferPlay[0])[0], ((uint32_t *) PulseBufferPlay[1])[0], ((uint32_t *) PulseBufferPlay[0])[1], ((uint32_t *) PulseBufferPlay[1])[1], ((uint32_t *) PulseBufferPlay[0])[2], ((uint32_t *) PulseBufferPlay[1])[2], ((uint32_t *) PulseBufferPlay[0])[3], ((uint32_t *) PulseBufferPlay[1])[3]);
         for(i = 0; i<nChannels; i++)
             for(j = 0; j<PulseBufferPlayReadCount[nChannels]; j++)
                 PulseBufferPlayMix[j*nChannels+i] = PulseBufferPlay[i][j];
-        pa_simple_write(PulseAudio, PulseBufferPlayMix, PulseBufferPlayReadCount[nChannels]*sizeof (float), NULL);
+        fprintf(stderr, "O: %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32"\n", ((uint32_t *) PulseBufferPlayMix)[0], ((uint32_t *) PulseBufferPlayMix)[1], ((uint32_t *) PulseBufferPlayMix)[2], ((uint32_t *) PulseBufferPlayMix)[3], ((uint32_t *) PulseBufferPlayMix)[4], ((uint32_t *) PulseBufferPlayMix)[5], ((uint32_t *) PulseBufferPlayMix)[6], ((uint32_t *) PulseBufferPlayMix)[7]);
+        pa_simple_write(PulseAudio, PulseBufferPlayMix, PulseBufferPlayReadCount[nChannels]*nChannels*sizeof (float), NULL);
     }
     cleanup();
     return 0;
