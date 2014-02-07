@@ -60,7 +60,7 @@ int JackOnBufferSize(jack_nframes_t nframes, void *arg) {
     JackBufferSize = nframes;
     fprintf(stderr, "Buffer size is %lu samples.\n", (unsigned long int) nframes);
     for(i = 0; i<nChannels; i++) {
-        tmpBufferPlay1 = jack_ringbuffer_create(JackBufferSize*sizeof (float)*2);
+        tmpBufferPlay1 = jack_ringbuffer_create(JackBufferSize*sizeof (float)*2+2);
         if(!tmpBufferPlay1) {
             fputs("Failed to allocate buffer.\n", stderr);
             isJackQuitting = 1;
