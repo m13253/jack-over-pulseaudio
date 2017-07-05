@@ -461,18 +461,18 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
     char const* port_short_name_a = jack_port_short_name(port_a);
     char const* port_short_name_b = jack_port_short_name(port_b);
 
-    if(strncmp(port_name_a, "system:", 7) == 0) {
+    if(std::strncmp(port_name_a, "system:", 7) == 0) {
         for(unsigned ch = 0; ch < num_channels; ++ch) {
-            if(strcmp(jack_port_short_name(self->jack_capture_ports[ch]), port_short_name_a) == 0) {
+            if(std::strcmp(jack_port_short_name(self->jack_capture_ports[ch]), port_short_name_a) == 0) {
                 jack_threaded_connect(self->jack_client, jack_port_name(self->jack_capture_ports[ch]), port_name_b, connect);
                 break;
             }
         }
     }
 
-    if(strncmp(port_name_b, "system:", 7) == 0) {
+    if(std::strncmp(port_name_b, "system:", 7) == 0) {
         for(unsigned ch = 0; ch < num_channels; ++ch) {
-            if(strcmp(jack_port_short_name(self->jack_playback_ports[ch]), port_short_name_b) == 0) {
+            if(std::strcmp(jack_port_short_name(self->jack_playback_ports[ch]), port_short_name_b) == 0) {
                 jack_threaded_connect(self->jack_client, port_name_a, jack_port_name(self->jack_playback_ports[ch]), connect);
                 break;
             }
@@ -488,7 +488,17 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
 }
 
 void JopaSession::jack_threaded_connect(jack_client_t* jack_client, char const* port_name_a, char const* port_name_b, int connect) {
-    std::thread(connect ? jack_connect : jack_disconnect, jack_client, port_name_a, port_name_b).detach();
+    char* port_name_a_ = strdup(port_name_a);
+    char* port_name_b_ = strdup(port_name_b);
+    std::thread([=]() {
+        if(connect) {
+            jack_connect(jack_client, port_name_a_, port_name_b_);
+        } else {
+            jack_disconnect(jack_client, port_name_a_, port_name_b_);
+        }
+        std::free(port_name_a_);
+        std::free(port_name_b_);
+    }).detach();
 }
 
 void JopaSession::jack_on_error(char const* reason) {
