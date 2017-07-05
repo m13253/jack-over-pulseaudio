@@ -79,11 +79,11 @@ private:
     class PulseThreadedMainloopLocker {
 
     private:
-    
+
         pa_threaded_mainloop* mainloop;
-    
+
     public:
-    
+
         PulseThreadedMainloopLocker(pa_threaded_mainloop* mainloop);
         ~PulseThreadedMainloopLocker();
 
