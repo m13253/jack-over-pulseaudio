@@ -1,15 +1,9 @@
-
 .PHONY: all clean
 
-CC=gcc
-LIB=-lpthread $(shell pkg-config --cflags --libs libpulse-simple || echo -lpulse-simple) $(shell pkg-config --cflags --libs jack || echo -ljack)
-CFLAGS=-Wall -Werror -O3 $(LIB) $(OPT)
+CXXFLAGS=-std=gnu++11 -Wall -g $(shell pkg-config --cflags libpulse jack)
+LDLIBS=-lpthread $(shell pkg-config --libs libpulse jack)
 
 all: jopa
 
 clean:
 	rm -f jopa
-
-jopa: jopa.c
-	$(CC) -o "$@" "$<" $(CFLAGS)
-
