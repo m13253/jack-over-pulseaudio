@@ -137,10 +137,10 @@ void JopaSession::init() {
     if(jack_set_process_callback(jack_client, jack_on_process, this) != 0) {
         throw std::runtime_error("Unable to register JACK callback functions");
     }
-    if(jack_set_buffer_size_callback(jack_client, jack_on_buffer_size, this) != 0) {
+    if(jack_set_sample_rate_callback(jack_client, jack_on_sample_rate, this) != 0) {
         throw std::runtime_error("Unable to register JACK callback functions");
     }
-    if(jack_set_sample_rate_callback(jack_client, jack_on_sample_rate, this) != 0) {
+    if(jack_set_buffer_size_callback(jack_client, jack_on_buffer_size, this) != 0) {
         throw std::runtime_error("Unable to register JACK callback functions");
     }
     if(jack_set_port_connect_callback(jack_client, jack_on_port_connect, this) != 0) {
@@ -422,6 +422,8 @@ int JopaSession::jack_on_buffer_size(jack_nframes_t nframes, void* arg) {
         throw std::runtime_error("Unable to create JACK monitor buffer");
     }
 
+    std::fprintf(stderr, "Buffer size is %u samples (%.2lf ms).\n", nframes, 1000.0 * nframes / self->sample_rate);
+
     return 0;
 }
 
@@ -445,6 +447,8 @@ int JopaSession::jack_on_sample_rate(jack_nframes_t nframes, void* arg) {
             pulse_throw_exception(self->pulse_context, "Unable to reset PulseAudio monitor sample rate");
         }
     }
+
+    std::fprintf(stderr, "Sample rate is %u Hz.\n", nframes);
 
     return 0;
 }
