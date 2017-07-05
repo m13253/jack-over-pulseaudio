@@ -1,7 +1,7 @@
 JACK Audio Connection Kit over PulseAudio (jopa)
 ================================================
 
-This program bridges JACK Audio Connection Kit to PulseAudio, sacrificing audio latency.
+This program bridges JACK Audio Connection Kit to PulseAudio, but sacrifices audio latency.
 
 Usage
 -----
