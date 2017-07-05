@@ -376,6 +376,7 @@ int JopaSession::jack_on_process(jack_nframes_t nframes, void* arg) {
         }
     }
 
+    // Invoke the callback manually
     {
         PulseThreadedMainloopLocker locker(self->pulse_mainloop);
         pulse_on_playback_writable(self->pulse_playback_stream, 0, self);
@@ -388,6 +389,7 @@ int JopaSession::jack_on_buffer_size(jack_nframes_t nframes, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
     PulseThreadedMainloopLocker(self->pulse_mainloop);
 
+    // Reset PulseAudio buffer
     self->jack_buffer_size = nframes;
     pa_buffer_attr buffer_attr = self->pulse_calc_buffer_attr();
     if(pulse_is_stream_ready(self->pulse_playback_stream)) {
@@ -406,6 +408,7 @@ int JopaSession::jack_on_buffer_size(jack_nframes_t nframes, void* arg) {
         }
     }
 
+    // Reset JACK ringbuffer
     jack_ringbuffer_free(self->jack_playback_ringbuffer);
     self->jack_playback_ringbuffer = jack_ringbuffer_create(self->jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
     if(self->jack_playback_ringbuffer == nullptr) {
@@ -431,6 +434,7 @@ int JopaSession::jack_on_sample_rate(jack_nframes_t nframes, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
     PulseThreadedMainloopLocker(self->pulse_mainloop);
 
+    // Reset PulseAudio streams
     self->sample_rate = nframes;
     if(pulse_is_stream_ready(self->pulse_playback_stream)) {
         if(!pulse_check_operation(pa_stream_update_sample_rate(self->pulse_playback_stream, nframes, nullptr, nullptr))) {
@@ -465,6 +469,7 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
     char const* port_short_name_a = jack_port_short_name(port_a);
     char const* port_short_name_b = jack_port_short_name(port_b);
 
+    // Search for system:capture ports
     if(std::strncmp(port_name_a, "system:", 7) == 0) {
         for(unsigned ch = 0; ch < num_channels; ++ch) {
             if(std::strcmp(jack_port_short_name(self->jack_capture_ports[ch]), port_short_name_a) == 0) {
@@ -474,6 +479,7 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
         }
     }
 
+    // Search for system:playback ports
     if(std::strncmp(port_name_b, "system:", 7) == 0) {
         for(unsigned ch = 0; ch < num_channels; ++ch) {
             if(std::strcmp(jack_port_short_name(self->jack_playback_ports[ch]), port_short_name_b) == 0) {
@@ -494,6 +500,9 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
 void JopaSession::jack_threaded_connect(jack_client_t* jack_client, char const* port_name_a, char const* port_name_b, int connect) {
     char* port_name_a_ = strdup(port_name_a);
     char* port_name_b_ = strdup(port_name_b);
+
+    // jack_connect can not be called in a callback function
+    // Start a separate thread to do the operation
     std::thread([=]() {
         if(connect) {
             jack_connect(jack_client, port_name_a_, port_name_b_);
@@ -620,8 +629,6 @@ void JopaSession::pulse_on_record_readable(pa_stream* p, size_t nbytes, void* us
 void JopaSession::pulse_on_monitor_readable(pa_stream* p, size_t nbytes, void* userdata) {
     JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
 
-//    std::fprintf(stderr, "==== Monitor readable\n");
-
     while(pa_stream_readable_size(p) > 0) {
         pulse_sample_t const* data;
         size_t nbytes;
@@ -645,12 +652,12 @@ void JopaSession::pulse_on_monitor_readable(pa_stream* p, size_t nbytes, void* u
         }
     }
 
-//    std::fprintf(stderr, "==== Monitor read\n");
 }
 
 void JopaSession::pulse_on_stream_moved(pa_stream* p, void* userdata) {
     JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
 
+    // Reset buffer attributes
     pa_buffer_attr buffer_attr = self->pulse_calc_buffer_attr();
     if(pulse_is_stream_ready(p)) {
         if(!pulse_check_operation(pa_stream_set_buffer_attr(p, &buffer_attr, nullptr, nullptr))) {
