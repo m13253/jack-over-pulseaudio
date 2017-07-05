@@ -39,7 +39,7 @@ private:
     typedef float pulse_sample_t;
     static constexpr unsigned num_channels = 2;
     jack_nframes_t sample_rate = 48000;
-    jack_nframes_t jack_buffer_size = 2048;
+    jack_nframes_t jack_buffer_size = 1024;
 
     jack_client_t* jack_client = nullptr;
     jack_port_t* jack_playback_ports[num_channels] = { nullptr };
