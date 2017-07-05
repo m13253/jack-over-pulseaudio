@@ -558,7 +558,7 @@ void JopaSession::pulse_on_playback_writable(pa_stream* p, size_t nbytes, void* 
     pulse_sample_t* data;
     size_t nbytes_readable = jack_ringbuffer_read_space(self->jack_playback_ringbuffer) / (num_channels * sizeof (pulse_sample_t)) * (num_channels * sizeof (pulse_sample_t));
     if(nbytes_readable == 0) {
-        std::fprintf(stderr, "Playback buffer underflow: %zu < %zu\n", nbytes_readable, nbytes);
+        return;
     }
     size_t nbytes_writable = nbytes_readable;
     if(pa_stream_begin_write(self->pulse_playback_stream, (void**) &data, &nbytes_writable) < 0) {
@@ -568,6 +568,9 @@ void JopaSession::pulse_on_playback_writable(pa_stream* p, size_t nbytes, void* 
         std::fprintf(stderr, "Playback buffer overflow: %zu < %zu\n", nbytes_writable, nbytes_readable);
     }
     size_t nbytes_read = jack_ringbuffer_read(self->jack_playback_ringbuffer, (char*) data, nbytes_writable);
+    if(nbytes_read == 0) {
+        return;
+    }
     if(pa_stream_write(self->pulse_playback_stream, data, nbytes_read, nullptr, 0, PA_SEEK_RELATIVE) < 0) {
         pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio playback buffer");
     }
