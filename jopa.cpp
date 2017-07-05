@@ -16,15 +16,18 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>
+#include <pthread.h>
 #include <spawn.h>
-#include <jack/control.h>
+#include <unistd.h>
 #include <jack/jack.h>
+#include <jack/ringbuffer.h>
 #include <pulse/pulseaudio.h>
 
 class JopaSession {
@@ -41,6 +44,9 @@ private:
     jack_port_t* jack_playback_ports[num_channels] = { nullptr };
     jack_port_t* jack_capture_ports[num_channels] = { nullptr };
     jack_port_t* jack_monitor_ports[num_channels] = { nullptr };
+    jack_ringbuffer_t* jack_playback_ringbuffer = nullptr;
+    jack_ringbuffer_t* jack_capture_ringbuffer = nullptr;
+    jack_ringbuffer_t* jack_monitor_ringbuffer = nullptr;
 
     static void jack_on_shutdown(void* arg);
     static int jack_on_process(jack_nframes_t nframes, void* arg);
@@ -49,15 +55,18 @@ private:
     static void jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int connect, void* arg);
     static void jack_on_error(char const* reason);
 
-    pa_mainloop* pulse_mainloop = nullptr;
+    pa_threaded_mainloop* pulse_mainloop = nullptr;
     pa_context* pulse_context = nullptr;
     pa_stream* pulse_playback_stream = nullptr;
     pa_stream* pulse_record_stream = nullptr;
     pa_stream* pulse_monitor_stream = nullptr;
 
     static void pulse_on_context_state(pa_context* c, void* userdata);
-    static void pulse_on_get_sink_info(pa_context* c, pa_sink_info const* i, int eol, void* userdata);
+    static void pulse_on_playback_writable(pa_stream* p, size_t nbytes, void* userdata);
+    static void pulse_on_record_readable(pa_stream* p, size_t nbytes, void* userdata);
+    static void pulse_on_monitor_readable(pa_stream* p, size_t nbytes, void* userdata);
     static void pulse_on_stream_moved(pa_stream* p, void* userdata);
+    static void pulse_on_get_sink_info(pa_context* c, pa_sink_info const* i, int eol, void* userdata);
     static bool pulse_is_stream_ready(pa_stream* p);
     static bool pulse_check_operation(pa_operation* o);
     static void pulse_throw_exception(pa_context* c, char const* reason);
@@ -65,10 +74,23 @@ private:
     pa_sample_spec pulse_calc_sample_spec() const;
     pa_buffer_attr pulse_calc_buffer_attr() const;
 
+    class PulseThreadedMainloopLocker {
+
+    private:
+    
+        pa_threaded_mainloop* mainloop;
+    
+    public:
+    
+        PulseThreadedMainloopLocker(pa_threaded_mainloop* mainloop);
+        ~PulseThreadedMainloopLocker();
+
+    };
+
 public:
 
     void init();
-    int run();
+    void run();
     ~JopaSession();
 
 };
@@ -76,11 +98,10 @@ public:
 extern char** environ;
 
 int main() {
-    JopaSession* session = new JopaSession;
-    session->init();
-    int retval = session->run();
-    delete session;
-    return retval;
+    JopaSession session;
+    session.init();
+    session.run();
+    return 0;
 }
 
 void JopaSession::init() {
@@ -154,13 +175,32 @@ void JopaSession::init() {
         }
     }
 
+    // Create JACK ringbuffers
+    jack_playback_ringbuffer = jack_ringbuffer_create(jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
+    if(jack_playback_ringbuffer == nullptr) {
+        throw std::runtime_error("Unable to create JACK playback buffer");
+    }
+    jack_capture_ringbuffer = jack_ringbuffer_create(jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
+    if(jack_capture_ringbuffer == nullptr) {
+        throw std::runtime_error("Unable to create JACK capture buffer");
+    }
+    jack_monitor_ringbuffer = jack_ringbuffer_create(jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
+    if(jack_monitor_ringbuffer == nullptr) {
+        throw std::runtime_error("Unable to create JACK monitor buffer");
+    }
+
+    // Activate JACK event loop
+    if(jack_activate(jack_client) != 0) {
+        throw std::runtime_error("Unable to activate the JACK event loop");
+    }
+
     // Create PulseAudio mainloop
-    pulse_mainloop = pa_mainloop_new();
+    pulse_mainloop = pa_threaded_mainloop_new();
     if(pulse_mainloop == nullptr) {
         throw std::runtime_error("Unable to create a PulseAudio event loop");
     }
     // Create PulseAudio context
-    pulse_context = pa_context_new(pa_mainloop_get_api(pulse_mainloop), "JACK over PulseAudio");
+    pulse_context = pa_context_new(pa_threaded_mainloop_get_api(pulse_mainloop), "JACK over PulseAudio");
     if(pulse_context == nullptr) {
         throw std::runtime_error("Unable to create a PulseAudio context");
     }
@@ -171,12 +211,15 @@ void JopaSession::init() {
     }
 }
 
-int JopaSession::run() {
-    int retval;
-    if(pa_mainloop_run(pulse_mainloop, &retval) < 0) {
+void JopaSession::run() {
+    if(pa_threaded_mainloop_start(pulse_mainloop) < 0) {
         throw std::runtime_error("Unable to run PulseAudio event loop");
     }
-    return retval;
+    // Deadlock
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex);
+    std::abort();
 }
 
 JopaSession::~JopaSession() {
@@ -201,7 +244,8 @@ JopaSession::~JopaSession() {
         pulse_context = nullptr;
     }
     if(pulse_mainloop != nullptr) {
-        pa_mainloop_free(pulse_mainloop);
+        pa_threaded_mainloop_stop(pulse_mainloop);
+        pa_threaded_mainloop_free(pulse_mainloop);
         pulse_mainloop = nullptr;
     }
     for(unsigned ch = 0; ch < num_channels; ++ch) {
@@ -234,38 +278,105 @@ void JopaSession::jack_on_shutdown(void* arg) {
 
 int JopaSession::jack_on_process(jack_nframes_t nframes, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
-    jack_sample_t* jack_buffer[self->num_channels];
-    pulse_sample_t* pulse_buffer;
-    size_t pulse_nbytes;
 
     // Copy playback stream
     if(pulse_is_stream_ready(self->pulse_playback_stream)) {
-        for(unsigned ch = 0; ch < self->num_channels; ++ch) {
+        jack_sample_t* jack_buffer[num_channels];
+        for(unsigned ch = 0; ch < num_channels; ++ch) {
             if(self->jack_playback_ports[ch] != nullptr) {
                 jack_buffer[ch] = (jack_sample_t*) jack_port_get_buffer(self->jack_playback_ports[ch], nframes);
             } else {
                 jack_buffer[ch] = nullptr;
             }
         }
-        pulse_nbytes = nframes * self->num_channels * sizeof (pulse_sample_t);
-        if(pa_stream_begin_write(self->pulse_playback_stream, (void**) &pulse_buffer, &pulse_nbytes) < 0) {
-            pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio buffer");
-        }
-        if(pulse_nbytes != nframes * (self->num_channels * sizeof (pulse_sample_t))) {
-            std::fprintf(stderr, "Playback buffer overflow: %zu < %zu\n", pulse_nbytes, nframes * self->num_channels * sizeof (pulse_sample_t));
-        }
-        for(size_t i = 0; i < pulse_nbytes / (self->num_channels * sizeof (pulse_sample_t)); ++i) {
-            for(unsigned ch = 0; ch < self->num_channels; ++ch) {
-                if(jack_buffer[ch] != nullptr) {
-                    pulse_buffer[i * self->num_channels + ch] = jack_buffer[ch][i];
-                } else {
-                    pulse_buffer[i * self->num_channels + ch] = 0;
+        size_t buffer_space = jack_ringbuffer_write_space(self->jack_playback_ringbuffer);
+        if(buffer_space >= nframes * (num_channels * sizeof (pulse_sample_t))) {
+            jack_ringbuffer_data_t write_vector[2];
+            jack_ringbuffer_get_write_vector(self->jack_playback_ringbuffer, write_vector);
+            size_t offset = 0;
+            for(jack_nframes_t i = 0; i < nframes; ++i) {
+                for(unsigned ch = 0; ch < num_channels; ++ch) {
+                    jack_nframes_t index = i * num_channels + ch;
+                    offset = index * sizeof (pulse_sample_t);
+                    if(offset < write_vector[0].len) {
+                        *(pulse_sample_t*) &write_vector[0].buf[offset] = jack_buffer[ch][i];
+                    } else {
+                        *(pulse_sample_t*) &write_vector[1].buf[offset - write_vector[0].len] = jack_buffer[ch][i];
+                    }
                 }
             }
+            jack_ringbuffer_write_advance(self->jack_playback_ringbuffer, nframes * (num_channels * sizeof (pulse_sample_t)));
+        } else {
+            std::fprintf(stderr, "Playback buffer overflow: %zu < %zu\n", buffer_space, nframes * (num_channels * sizeof (pulse_sample_t)));
         }
-        if(pa_stream_write(self->pulse_playback_stream, pulse_buffer, pulse_nbytes, nullptr, 0, PA_SEEK_RELATIVE) < 0) {
-            pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio buffer");
+    }
+
+    // Copy record stream
+    {
+        jack_sample_t* jack_buffer[num_channels];
+        for(unsigned ch = 0; ch < num_channels; ++ch) {
+            if(self->jack_capture_ports[ch] != nullptr) {
+                jack_buffer[ch] = (jack_sample_t*) jack_port_get_buffer(self->jack_capture_ports[ch], nframes);
+            } else {
+                jack_buffer[ch] = nullptr;
+            }
         }
+        size_t buffer_space = jack_ringbuffer_read_space(self->jack_capture_ringbuffer);
+        if(buffer_space >= nframes * (num_channels * sizeof (pulse_sample_t))) {
+            jack_ringbuffer_data_t read_vector[2];
+            jack_ringbuffer_get_read_vector(self->jack_capture_ringbuffer, read_vector);
+            size_t offset = 0;
+            for(jack_nframes_t i = 0; i < nframes; ++i) {
+                for(unsigned ch = 0; ch < num_channels; ++ch) {
+                    jack_nframes_t index = i * num_channels + ch;
+                    offset = index * sizeof (pulse_sample_t);
+                    if(offset < read_vector[0].len) {
+                        jack_buffer[ch][i] = *(pulse_sample_t*) &read_vector[0].buf[offset];
+                    } else {
+                        jack_buffer[ch][i] = *(pulse_sample_t*) &read_vector[1].buf[offset - read_vector[0].len];
+                    }
+                }
+            }
+            jack_ringbuffer_read_advance(self->jack_capture_ringbuffer, nframes * (num_channels * sizeof (pulse_sample_t)));
+        } else {
+            std::fprintf(stderr, "Record buffer underflow: %zu < %zu\n", buffer_space, nframes * (num_channels * sizeof (pulse_sample_t)));
+        }
+    }
+
+    // Copy monitor stream
+    {
+        jack_sample_t* jack_buffer[num_channels];
+        for(unsigned ch = 0; ch < num_channels; ++ch) {
+            if(self->jack_monitor_ports[ch] != nullptr) {
+                jack_buffer[ch] = (jack_sample_t*) jack_port_get_buffer(self->jack_monitor_ports[ch], nframes);
+            } else {
+                jack_buffer[ch] = nullptr;
+            }
+        }
+        size_t buffer_space = jack_ringbuffer_read_space(self->jack_monitor_ringbuffer);
+        if(buffer_space >= nframes * (num_channels * sizeof (pulse_sample_t))) {
+            jack_ringbuffer_data_t read_vector[2];
+            jack_ringbuffer_get_read_vector(self->jack_monitor_ringbuffer, read_vector);
+            for(jack_nframes_t i = 0; i < nframes; ++i) {
+                for(unsigned ch = 0; ch < num_channels; ++ch) {
+                    jack_nframes_t index = i * num_channels + ch;
+                    size_t offset = index * sizeof (pulse_sample_t);
+                    if(offset < read_vector[0].len) {
+                        jack_buffer[ch][i] = *(pulse_sample_t*) &read_vector[0].buf[offset];
+                    } else {
+                        jack_buffer[ch][i] = *(pulse_sample_t*) &read_vector[1].buf[offset - read_vector[0].len];
+                    }
+                }
+            }
+            jack_ringbuffer_read_advance(self->jack_monitor_ringbuffer, nframes * (num_channels * sizeof (pulse_sample_t)));
+        } else {
+            std::fprintf(stderr, "Monitor buffer underflow: %zu < %zu\n", buffer_space, nframes * (num_channels * sizeof (pulse_sample_t)));
+        }
+    }
+
+    {
+        PulseThreadedMainloopLocker locker(self->pulse_mainloop);
+        pulse_on_playback_writable(self->pulse_playback_stream, 0, self);
     }
 
     return 0;
@@ -273,6 +384,7 @@ int JopaSession::jack_on_process(jack_nframes_t nframes, void* arg) {
 
 int JopaSession::jack_on_buffer_size(jack_nframes_t nframes, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
+    PulseThreadedMainloopLocker(self->pulse_mainloop);
 
     self->jack_buffer_size = nframes;
     pa_buffer_attr buffer_attr = self->pulse_calc_buffer_attr();
@@ -292,11 +404,28 @@ int JopaSession::jack_on_buffer_size(jack_nframes_t nframes, void* arg) {
         }
     }
 
+    jack_ringbuffer_free(self->jack_playback_ringbuffer);
+    self->jack_playback_ringbuffer = jack_ringbuffer_create(self->jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
+    if(self->jack_playback_ringbuffer == nullptr) {
+        throw std::runtime_error("Unable to create JACK playback buffer");
+    }
+    jack_ringbuffer_free(self->jack_capture_ringbuffer);
+    self->jack_capture_ringbuffer = jack_ringbuffer_create(self->jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
+    if(self->jack_capture_ringbuffer == nullptr) {
+        throw std::runtime_error("Unable to create JACK capture buffer");
+    }
+    jack_ringbuffer_free(self->jack_monitor_ringbuffer);
+    self->jack_monitor_ringbuffer = jack_ringbuffer_create(self->jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3));
+    if(self->jack_monitor_ringbuffer == nullptr) {
+        throw std::runtime_error("Unable to create JACK monitor buffer");
+    }
+
     return 0;
 }
 
 int JopaSession::jack_on_sample_rate(jack_nframes_t nframes, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
+    PulseThreadedMainloopLocker(self->pulse_mainloop);
 
     self->sample_rate = nframes;
     if(pulse_is_stream_ready(self->pulse_playback_stream)) {
@@ -357,6 +486,10 @@ void JopaSession::pulse_on_context_state(pa_context* c, void* userdata) {
         pulse_throw_exception(c, "Unable to create a PulseAudio monitor stream");
     }
 
+    // Set stream read/write callback
+    pa_stream_set_read_callback(self->pulse_record_stream, pulse_on_record_readable, self);
+    pa_stream_set_read_callback(self->pulse_monitor_stream, pulse_on_monitor_readable, self);
+
     // A move operation resets the stream's buffer attributes
     // Use a callback to detect the change
     pa_stream_set_moved_callback(self->pulse_playback_stream, pulse_on_stream_moved, self);
@@ -379,6 +512,92 @@ void JopaSession::pulse_on_context_state(pa_context* c, void* userdata) {
     }
 }
 
+void JopaSession::pulse_on_playback_writable(pa_stream* p, size_t nbytes, void* userdata) {
+    JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
+
+    pulse_sample_t* data;
+    size_t nbytes_readable = jack_ringbuffer_read_space(self->jack_playback_ringbuffer) / (num_channels * sizeof (pulse_sample_t)) * (num_channels * sizeof (pulse_sample_t));
+    if(nbytes_readable == 0) {
+        std::fprintf(stderr, "Playback buffer underflow: %zu < %zu\n", nbytes_readable, nbytes);
+    }
+    if(pa_stream_begin_write(self->pulse_playback_stream, (void**) &data, &nbytes_readable) < 0) {
+        pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio playback buffer");
+    }
+    size_t nbytes_read = jack_ringbuffer_read(self->jack_playback_ringbuffer, (char*) data, nbytes_readable);
+    if(pa_stream_write(self->pulse_playback_stream, data, nbytes_read, nullptr, 0, PA_SEEK_RELATIVE) < 0) {
+        pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio playback buffer");
+    }
+}
+
+void JopaSession::pulse_on_record_readable(pa_stream* p, size_t nbytes, void* userdata) {
+    JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
+
+    while(pa_stream_readable_size(p) > 0) {
+        pulse_sample_t const* data;
+        size_t nbytes;
+        if(pa_stream_peek(p, (void const**) &data, &nbytes) < 0) {
+            pulse_throw_exception(self->pulse_context, "Unable to read from PulseAudio record buffer");
+        }
+        if(data != nullptr) {
+            size_t nbytes_writable = jack_ringbuffer_write_space(self->jack_capture_ringbuffer) / (num_channels * sizeof (pulse_sample_t)) * (num_channels * sizeof (pulse_sample_t));
+            size_t nbytes_written = jack_ringbuffer_write(self->jack_capture_ringbuffer, (char const*) data, std::min(nbytes, nbytes_writable));
+            if(nbytes_written != nbytes) {
+                std::fprintf(stderr, "Record buffer overflow: %zu < %zu\n", nbytes_written, nbytes);
+            }
+            if(pa_stream_drop(p) < 0) {
+                pulse_throw_exception(self->pulse_context, "Unable to read from PulseAudio record buffer");
+            }
+        } else if(nbytes != 0) {
+            std::fprintf(stderr, "Record buffer overflow: %zu bytes hole\n", nbytes);
+            if(pa_stream_drop(p) < 0) {
+                pulse_throw_exception(self->pulse_context, "Unable to read from PulseAudio record buffer");
+            }
+        }
+    }
+}
+
+void JopaSession::pulse_on_monitor_readable(pa_stream* p, size_t nbytes, void* userdata) {
+    JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
+
+//    std::fprintf(stderr, "==== Monitor readable\n");
+
+    while(pa_stream_readable_size(p) > 0) {
+        pulse_sample_t const* data;
+        size_t nbytes;
+        if(pa_stream_peek(p, (void const**) &data, &nbytes) < 0) {
+            pulse_throw_exception(self->pulse_context, "Unable to read from PulseAudio monitor buffer");
+        }
+        if(data != nullptr) {
+            size_t nbytes_writable = jack_ringbuffer_write_space(self->jack_monitor_ringbuffer) / (num_channels * sizeof (pulse_sample_t)) * (num_channels * sizeof (pulse_sample_t));
+            size_t nbytes_written = jack_ringbuffer_write(self->jack_monitor_ringbuffer, (char const*) data, std::min(nbytes, nbytes_writable));
+            if(nbytes_written != nbytes) {
+                std::fprintf(stderr, "Monitor buffer overflow: %zu < %zu\n", nbytes_written, nbytes);
+            }
+            if(pa_stream_drop(p) < 0) {
+                pulse_throw_exception(self->pulse_context, "Unable to read from PulseAudio monitor buffer");
+            }
+        } else if(nbytes != 0) {
+            std::fprintf(stderr, "Monitor buffer overflow: %zu bytes hole\n", nbytes);
+            if(pa_stream_drop(p) < 0) {
+                pulse_throw_exception(self->pulse_context, "Unable to read from PulseAudio monitor buffer");
+            }
+        }
+    }
+
+//    std::fprintf(stderr, "==== Monitor read\n");
+}
+
+void JopaSession::pulse_on_stream_moved(pa_stream* p, void* userdata) {
+    JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
+
+    pa_buffer_attr buffer_attr = self->pulse_calc_buffer_attr();
+    if(pulse_is_stream_ready(p)) {
+        if(!pulse_check_operation(pa_stream_set_buffer_attr(p, &buffer_attr, nullptr, nullptr))) {
+            pulse_throw_exception(self->pulse_context, "Unable to reset PulseAudio monitor buffer");
+        }
+    }
+}
+
 void JopaSession::pulse_on_get_sink_info(pa_context* c, pa_sink_info const* i, int eol, void* userdata) {
     JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
 
@@ -393,22 +612,6 @@ void JopaSession::pulse_on_get_sink_info(pa_context* c, pa_sink_info const* i, i
     pa_buffer_attr buffer_attr = self->pulse_calc_buffer_attr();
     if(pa_stream_connect_record(self->pulse_monitor_stream, i->monitor_source_name, &buffer_attr, (pa_stream_flags_t) (PA_STREAM_VARIABLE_RATE | PA_STREAM_ADJUST_LATENCY)) < 0) {
         pulse_throw_exception(c, "Unable to connect to PulseAudio monitor stream");
-    }
-
-    // Activate JACK event loop
-    if(jack_activate(self->jack_client) != 0) {
-        throw std::runtime_error("Unable to activate the JACK event loop");
-    }
-}
-
-void JopaSession::pulse_on_stream_moved(pa_stream* p, void* userdata) {
-    JopaSession* self = reinterpret_cast<JopaSession*>(userdata);
-
-    pa_buffer_attr buffer_attr = self->pulse_calc_buffer_attr();
-    if(pulse_is_stream_ready(p)) {
-        if(!pulse_check_operation(pa_stream_set_buffer_attr(p, &buffer_attr, nullptr, nullptr))) {
-            pulse_throw_exception(self->pulse_context, "Unable to reset PulseAudio monitor buffer");
-        }
     }
 }
 
@@ -443,11 +646,24 @@ pa_sample_spec JopaSession::pulse_calc_sample_spec() const {
 
 pa_buffer_attr JopaSession::pulse_calc_buffer_attr() const {
     pa_buffer_attr buffer_attr = {
-        .maxlength = (uint32_t) (jack_buffer_size * (num_channels * sizeof (float) * 2)),
-        .tlength   = (uint32_t) (jack_buffer_size * (num_channels * sizeof (float))),
+        .maxlength = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3)),
+        .tlength   = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t))),
         .prebuf    = (uint32_t) -1,
-        .minreq    = (uint32_t) (jack_buffer_size * (num_channels * sizeof (float))),
-        .fragsize  = (uint32_t) (jack_buffer_size * (num_channels * sizeof (float)))
+        .minreq    = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t))),
+        .fragsize  = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t)))
     };
     return buffer_attr;
+}
+
+JopaSession::PulseThreadedMainloopLocker::PulseThreadedMainloopLocker(pa_threaded_mainloop* mainloop) {
+    this->mainloop = mainloop;
+    if(mainloop) {
+        pa_threaded_mainloop_lock(mainloop);
+    }
+}
+
+JopaSession::PulseThreadedMainloopLocker::~PulseThreadedMainloopLocker() {
+    if(mainloop) {
+        pa_threaded_mainloop_unlock(mainloop);
+    }
 }
