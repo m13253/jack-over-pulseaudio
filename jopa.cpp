@@ -23,6 +23,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <pthread.h>
 #include <spawn.h>
 #include <unistd.h>
@@ -53,6 +54,7 @@ private:
     static int jack_on_buffer_size(jack_nframes_t nframes, void* arg);
     static int jack_on_sample_rate(jack_nframes_t nframes, void* arg);
     static void jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int connect, void* arg);
+    static void jack_threaded_connect(jack_client_t* jack_client, char const* port_name_a, char const* port_name_b, int connect);
     static void jack_on_error(char const* reason);
 
     pa_threaded_mainloop* pulse_mainloop = nullptr;
@@ -449,6 +451,44 @@ int JopaSession::jack_on_sample_rate(jack_nframes_t nframes, void* arg) {
 
 void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int connect, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
+
+    jack_port_t* port_a = jack_port_by_id(self->jack_client, a);
+    jack_port_t* port_b = jack_port_by_id(self->jack_client, b);
+
+    char const* port_name_a = jack_port_name(port_a);
+    char const* port_name_b = jack_port_name(port_b);
+
+    char const* port_short_name_a = jack_port_short_name(port_a);
+    char const* port_short_name_b = jack_port_short_name(port_b);
+
+    if(strncmp(port_name_a, "system:", 7) == 0) {
+        for(unsigned ch = 0; ch < num_channels; ++ch) {
+            if(strcmp(jack_port_short_name(self->jack_capture_ports[ch]), port_short_name_a) == 0) {
+                jack_threaded_connect(self->jack_client, jack_port_name(self->jack_capture_ports[ch]), port_name_b, connect);
+                break;
+            }
+        }
+    }
+
+    if(strncmp(port_name_b, "system:", 7) == 0) {
+        for(unsigned ch = 0; ch < num_channels; ++ch) {
+            if(strcmp(jack_port_short_name(self->jack_playback_ports[ch]), port_short_name_b) == 0) {
+                jack_threaded_connect(self->jack_client, port_name_a, jack_port_name(self->jack_playback_ports[ch]), connect);
+                break;
+            }
+        }
+    }
+
+    if(connect) {
+        std::fprintf(stderr, "%s =====> %s\n", port_name_a, port_name_b);
+    } else {
+        std::fprintf(stderr, "%s ==X==> %s\n", port_name_a, port_name_b);
+    }
+
+}
+
+void JopaSession::jack_threaded_connect(jack_client_t* jack_client, char const* port_name_a, char const* port_name_b, int connect) {
+    std::thread(connect ? jack_connect : jack_disconnect, jack_client, port_name_a, port_name_b).detach();
 }
 
 void JopaSession::jack_on_error(char const* reason) {
@@ -520,10 +560,14 @@ void JopaSession::pulse_on_playback_writable(pa_stream* p, size_t nbytes, void* 
     if(nbytes_readable == 0) {
         std::fprintf(stderr, "Playback buffer underflow: %zu < %zu\n", nbytes_readable, nbytes);
     }
-    if(pa_stream_begin_write(self->pulse_playback_stream, (void**) &data, &nbytes_readable) < 0) {
+    size_t nbytes_writable = nbytes_readable;
+    if(pa_stream_begin_write(self->pulse_playback_stream, (void**) &data, &nbytes_writable) < 0) {
         pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio playback buffer");
     }
-    size_t nbytes_read = jack_ringbuffer_read(self->jack_playback_ringbuffer, (char*) data, nbytes_readable);
+    if(nbytes_writable != nbytes_readable) {
+        std::fprintf(stderr, "Playback buffer overflow: %zu < %zu\n", nbytes_writable, nbytes_readable);
+    }
+    size_t nbytes_read = jack_ringbuffer_read(self->jack_playback_ringbuffer, (char*) data, nbytes_writable);
     if(pa_stream_write(self->pulse_playback_stream, data, nbytes_read, nullptr, 0, PA_SEEK_RELATIVE) < 0) {
         pulse_throw_exception(self->pulse_context, "Unable to write to PulseAudio playback buffer");
     }
