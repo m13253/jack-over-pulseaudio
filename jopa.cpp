@@ -38,7 +38,7 @@ private:
     typedef jack_default_audio_sample_t jack_sample_t;
     typedef float pulse_sample_t;
     static constexpr unsigned num_channels = 2;
-    static constexpr size_t pulse_buffer_fragments = 4;
+    static constexpr unsigned pulse_buffer_fragments = 4;
     jack_nframes_t sample_rate = 48000;
     jack_nframes_t jack_buffer_size = 1024;
 
