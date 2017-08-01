@@ -132,6 +132,13 @@ void JopaSession::init() {
         throw std::runtime_error("Unable to connect to the JACK server");
     }
 
+    struct sched_param sched_parameters;
+    memset(&sched_parameters, 0, sizeof sched_parameters);
+    sched_parameters.sched_priority = 10;
+    if(pthread_setschedparam(pthread_self(), SCHED_FIFO, &sched_parameters) != 0) {
+        std::fprintf(stderr, "Cannot use real-time scheduling (FIFO at priority 10)\n");
+    }
+
     // Register callbacks
     ::jack_on_shutdown(jack_client, this->jack_on_shutdown, this);
     if(jack_set_process_callback(jack_client, jack_on_process, this) != 0) {
