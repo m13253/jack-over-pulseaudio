@@ -38,6 +38,7 @@ private:
     typedef jack_default_audio_sample_t jack_sample_t;
     typedef float pulse_sample_t;
     static constexpr unsigned num_channels = 2;
+    static constexpr size_t pulse_buffer_fragments = 4;
     jack_nframes_t sample_rate = 48000;
     jack_nframes_t jack_buffer_size = 1024;
 
@@ -432,7 +433,8 @@ int JopaSession::jack_on_buffer_size(jack_nframes_t nframes, void* arg) {
         throw std::runtime_error("Unable to create JACK monitor buffer");
     }
 
-    std::fprintf(stderr, "Buffer size is %u samples (%.2lf ms).\n", nframes, 1000.0 * nframes / self->sample_rate);
+    std::fprintf(stderr, "JACK buffer size is %u samples (%.2lf ms).\n", nframes, 1000.0 * nframes / self->sample_rate);
+    std::fprintf(stderr, "PulseAudio buffer size is %u samples (%.2lf ms).\n", nframes * pulse_buffer_fragments, 1000.0 * nframes * pulse_buffer_fragments / self->sample_rate);
 
     return 0;
 }
@@ -721,7 +723,7 @@ pa_sample_spec JopaSession::pulse_calc_sample_spec() const {
 
 pa_buffer_attr JopaSession::pulse_calc_buffer_attr() const {
     pa_buffer_attr buffer_attr = {
-        .maxlength = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * 3)),
+        .maxlength = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t) * pulse_buffer_fragments)),
         .tlength   = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t))),
         .prebuf    = (uint32_t) -1,
         .minreq    = (uint32_t) (jack_buffer_size * (num_channels * sizeof (pulse_sample_t))),
