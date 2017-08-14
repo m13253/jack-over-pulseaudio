@@ -127,7 +127,7 @@ void JopaSession::init() {
     if(jack_client == nullptr) {
         // Create a new JACK server
         pid_t jack_server_pid;
-        static char const* const jack_server_argv[] = {"jackd", "-T", "-d", "dummy", NULL};
+        static char const* const jack_server_argv[] = {"jackd", "-T", "-d", "dummy", "-p", "1024", NULL};
         if(posix_spawnp(&jack_server_pid, "jackd", nullptr, nullptr, const_cast<char* const*>(jack_server_argv), environ) != 0) {
             throw std::runtime_error("Unable to start a JACK server");
         }
