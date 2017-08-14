@@ -21,9 +21,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <queue>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <pthread.h>
 #include <spawn.h>
 #include <unistd.h>
@@ -55,7 +55,6 @@ private:
     static int jack_on_buffer_size(jack_nframes_t nframes, void* arg);
     static int jack_on_sample_rate(jack_nframes_t nframes, void* arg);
     static void jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int connect, void* arg);
-    static void jack_threaded_connect(jack_client_t* jack_client, char const* port_name_a, char const* port_name_b, int connect);
     static void jack_on_error(char const* reason);
 
     pa_threaded_mainloop* pulse_mainloop = nullptr;
@@ -71,12 +70,18 @@ private:
     static void pulse_on_playback_stream_moved(pa_stream* p, void* userdata);
     static void pulse_on_record_stream_moved(pa_stream* p, void* userdata);
     static void pulse_on_get_sink_info(pa_context* c, pa_sink_info const* i, int eol, void* userdata);
-    static bool pulse_is_stream_ready(pa_stream* p);
-    static bool pulse_check_operation(pa_operation* o);
-    static void pulse_throw_exception(pa_context* c, char const* reason);
 
-    pa_sample_spec pulse_calc_sample_spec() const;
-    pa_buffer_attr pulse_calc_buffer_attr(bool record) const;
+    struct JackConnectOperation {
+
+        std::string port_name_a;
+        std::string port_name_b;
+        bool connect;
+
+    };
+
+    std::queue<JackConnectOperation> jack_connect_operations;
+    void jack_schedule_connect(char const* port_name_a, char const* port_name_b, bool connect);
+    void jack_finish_connect();
 
     class PulseThreadedMainloopLocker {
 
@@ -90,6 +95,12 @@ private:
         ~PulseThreadedMainloopLocker();
 
     };
+
+    static bool pulse_is_stream_ready(pa_stream* p);
+    static bool pulse_check_operation(pa_operation* o);
+    static void pulse_throw_exception(pa_context* c, char const* reason);
+    pa_sample_spec pulse_calc_sample_spec() const;
+    pa_buffer_attr pulse_calc_buffer_attr(bool record) const;
 
 public:
 
@@ -290,6 +301,8 @@ void JopaSession::jack_on_shutdown(void* arg) {
 int JopaSession::jack_on_process(jack_nframes_t nframes, void* arg) {
     JopaSession* self = reinterpret_cast<JopaSession*>(arg);
 
+    self->jack_finish_connect();
+
     // Copy playback stream
     {
         jack_sample_t* jack_buffer[num_channels];
@@ -483,7 +496,7 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
     if(std::strncmp(port_name_a, "system:", 7) == 0) {
         for(unsigned ch = 0; ch < num_channels; ++ch) {
             if(std::strcmp(jack_port_short_name(self->jack_capture_ports[ch]), port_short_name_a) == 0) {
-                jack_threaded_connect(self->jack_client, jack_port_name(self->jack_capture_ports[ch]), port_name_b, connect);
+                self->jack_schedule_connect(jack_port_name(self->jack_capture_ports[ch]), port_name_b, connect);
                 break;
             }
         }
@@ -493,7 +506,7 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
     if(std::strncmp(port_name_b, "system:", 7) == 0) {
         for(unsigned ch = 0; ch < num_channels; ++ch) {
             if(std::strcmp(jack_port_short_name(self->jack_playback_ports[ch]), port_short_name_b) == 0) {
-                jack_threaded_connect(self->jack_client, port_name_a, jack_port_name(self->jack_playback_ports[ch]), connect);
+                self->jack_schedule_connect(port_name_a, jack_port_name(self->jack_playback_ports[ch]), connect);
                 break;
             }
         }
@@ -505,23 +518,6 @@ void JopaSession::jack_on_port_connect(jack_port_id_t a, jack_port_id_t b, int c
         std::fprintf(stderr, "%s ==X==> %s\n", port_name_a, port_name_b);
     }
 
-}
-
-void JopaSession::jack_threaded_connect(jack_client_t* jack_client, char const* port_name_a, char const* port_name_b, int connect) {
-    char* port_name_a_ = strdup(port_name_a);
-    char* port_name_b_ = strdup(port_name_b);
-
-    // jack_connect can not be called in a callback function
-    // Start a separate thread to do the operation
-    std::thread([=]() {
-        if(connect) {
-            jack_connect(jack_client, port_name_a_, port_name_b_);
-        } else {
-            jack_disconnect(jack_client, port_name_a_, port_name_b_);
-        }
-        std::free(port_name_a_);
-        std::free(port_name_b_);
-    }).detach();
 }
 
 void JopaSession::jack_on_error(char const* reason) {
@@ -701,6 +697,27 @@ void JopaSession::pulse_on_get_sink_info(pa_context* c, pa_sink_info const* i, i
     pa_buffer_attr monitor_buffer_attr = self->pulse_calc_buffer_attr(true);
     if(pa_stream_connect_record(self->pulse_monitor_stream, i->monitor_source_name, &monitor_buffer_attr, (pa_stream_flags_t) (PA_STREAM_VARIABLE_RATE | PA_STREAM_ADJUST_LATENCY)) < 0) {
         pulse_throw_exception(c, "Unable to connect to PulseAudio monitor stream");
+    }
+}
+
+void JopaSession::jack_schedule_connect(char const* port_name_a, char const* port_name_b, bool connect) {
+    JackConnectOperation operation = {
+        .port_name_a = port_name_a,
+        .port_name_b = port_name_b,
+        .connect = connect
+    };
+    jack_connect_operations.push(std::move(operation));
+}
+
+void JopaSession::jack_finish_connect() {
+    while(!jack_connect_operations.empty()) {
+        JackConnectOperation const& operation = jack_connect_operations.front();
+        if(operation.connect) {
+            jack_connect(jack_client, operation.port_name_a.c_str(), operation.port_name_b.c_str());
+        } else {
+            jack_disconnect(jack_client, operation.port_name_a.c_str(), operation.port_name_b.c_str());
+        }
+        jack_connect_operations.pop();
     }
 }
 
