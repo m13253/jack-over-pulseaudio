@@ -8,7 +8,7 @@ Usage
 
 ```
 $ make
-$ jackd -d dummy &
+$ jackd -d dummy -p 1024 &
 $ ./jopa &
 ```
 
@@ -23,4 +23,4 @@ Choppy sound
 
 - Set JACK buffer size to a larger number.
 
-- Change the value of `pulse_buffer_fragments` (in the source code) to a larger number.
+- Change the value of `ringbuffer_fragments` (in the source code) to a larger number.
